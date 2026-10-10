@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.data/
+.env
+.env.local
+.env.server
+.env.*.local
+firebase-debug.log
+firestore-debug.log
+.firebase/
+.vercel/
+.tools/
+*.log
+*.tsbuildinfo
+docs/*.jpg
+docs/*.jpeg
+docs/*.png

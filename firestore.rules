@@ -1,0 +1,175 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null && request.auth.token.firebase.sign_in_provider == 'google.com'; }
+    function me() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function active() { return signedIn() && me().active == true; }
+    function manager() { return active() && me().role in ['admin', 'manager']; }
+    function admin() { return active() && me().role == 'admin'; }
+    function text(v, max) { return v is string && v.size() <= max; }
+    function link(v) { return text(v, 2000) && (v == '' || v.matches('^https?://[^ ]+$')); }
+    function date(v) { return v is string && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
+    function validUser(d, uid) {
+      return d.keys().hasAll(['uid', 'fullName', 'email', 'role', 'active', 'createdAt', 'updatedAt'])
+        && d.keys().hasOnly(['uid', 'fullName', 'email', 'role', 'active', 'createdAt', 'updatedAt'])
+        && d.uid == uid && text(d.fullName,120) && d.fullName.size() > 0
+        && text(d.email,254) && d.email.matches('^[^ @]+@[^ @]+[.][^ @]+$')
+        && d.role in ['admin','manager','employee'] && d.active is bool
+        && d.createdAt is timestamp && d.updatedAt == request.time;
+    }
+    function validContribution(c, a) {
+      return c is map && c.keys().hasAll(['title','scriptUrl','mediaUrl','note','status','submittedAt'])
+        && c.keys().hasOnly(['title','scriptUrl','mediaUrl','note','status','submittedAt'])
+        && text(c.title,180) && link(c.scriptUrl) && link(c.mediaUrl) && text(c.note,5000)
+        && c.status in ['pending','working','submitted']
+        && ((c.status != 'submitted' && c.submittedAt == null)
+          || (c.status == 'submitted' && c.submittedAt is timestamp
+            && (a.workRole == 'content' ? c.title.size() > 0 && c.scriptUrl.size() > 0
+              : a.workRole == 'media' ? c.mediaUrl.size() > 0
+              : c.note.size() > 0 || c.scriptUrl.size() > 0 || c.mediaUrl.size() > 0)));
+    }
+    function allSubmitted(d) { return d.submittedUids.toSet() == d.assigneeUids.toSet(); }
+    function skuFor(n) { return 'vuatoi.' + (n < 10 ? '000' : n < 100 ? '00' : n < 1000 ? '0' : '') + string(n); }
+    function hasSku(d) { return 'sku' in d && d.sku != ''; }
+    function allocatedSku(d, id) {
+      let counter = getAfter(/databases/$(database)/documents/counters/taskSku).data;
+      return d.skuNumber is int && d.skuNumber >= 1 && d.skuNumber <= 999999999
+        && d.sku == skuFor(d.skuNumber) && counter.value == d.skuNumber
+        && counter.taskId == id && counter.updatedAt == request.time;
+    }
+    function validSkuUpdate(d, id) {
+      return hasSku(resource.data) ? d.sku == resource.data.sku && d.skuNumber == resource.data.skuNumber
+        : !hasSku(d) || allocatedSku(d, id);
+    }
+    function skuMigration(id) {
+      return !hasSku(resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['sku','skuNumber','updatedAt'])
+        && request.resource.data.updatedAt == request.time && allocatedSku(request.resource.data,id);
+    }
+    function validContentInfo(c) {
+      return c is map && c.keys().hasOnly(['pageName','videoType','contentLine','ageGroups','audience','campaign','thumbnailUrl','sourceUrl','sourceStatus'])
+        && text(c.pageName,180) && text(c.videoType,180) && text(c.contentLine,180)
+        && c.ageGroups is list && c.ageGroups.size() <= 6 && c.ageGroups.toSet().size() == c.ageGroups.size()
+        && c.ageGroups.toSet().hasOnly(['Dưới 18','18–24','25–34','35–44','45–54','55+'])
+        && text(c.audience,180) && text(c.campaign,180) && link(c.thumbnailUrl) && link(c.sourceUrl)
+        && c.sourceStatus in ['not_started','shooting','recorded'];
+    }
+    function validReview(r) {
+      return r is map && r.keys().hasOnly(['status','byUid','byName','signature','reviewedAt'])
+        && r.status in ['pending','approved','needs_revision'] && text(r.byUid,128) && text(r.byName,120) && text(r.signature,50000)
+        && (r.reviewedAt == null ? r.status == 'pending' && r.byUid == '' && r.byName == '' && r.signature == ''
+          : r.reviewedAt is timestamp && r.byUid != '' && r.byName != '');
+    }
+    function validReviewChange(d, key) {
+      return !d.diff(resource.data).affectedKeys().hasAny([key])
+        || (d[key].byUid == request.auth.uid && d[key].byName == me().fullName && d[key].reviewedAt == request.time);
+    }
+    function validProductionUpdate(d) {
+      let changed = d.diff(resource.data).affectedKeys();
+      return (!changed.hasAny(['contentInfo']) || validContentInfo(d.contentInfo))
+        && (!changed.hasAny(['scriptReview']) || validReview(d.scriptReview))
+        && (!changed.hasAny(['mediaReview']) || validReview(d.mediaReview));
+    }
+    function publication(d) {
+      return d.requiresPublishing is bool && (d.plannedPublishDate == null || date(d.plannedPublishDate))
+        && ((!d.requiresPublishing && d.publicationStatus == 'not_applicable' && d.plannedPublishDate == null && d.publishedDate == null && d.postUrl == null)
+          || (d.requiresPublishing && d.publicationStatus in ['not_scheduled','scheduled','published']
+            && (d.publicationStatus != 'scheduled' || d.plannedPublishDate != null)
+            && (d.publicationStatus == 'published' ? date(d.publishedDate) && link(d.postUrl) && d.postUrl != '' : d.publishedDate == null && d.postUrl == null)));
+    }
+    function validTask(d) {
+      return d.keys().hasOnly(['title','description','taskType','referenceUrl','assigneeUids','submittedUids','assignments','contributions','createdByUid','createdByName','status','priority','deadlineAt','durationHours','periodKey','requiresPublishing','publicationStatus','plannedPublishDate','publishedDate','postUrl','createdAt','updatedAt','completedAt','sku','skuNumber','contentInfo','scriptReview','mediaReview'])
+        && text(d.title,180) && d.title.size() > 0 && text(d.description,5000) && link(d.referenceUrl)
+        && d.taskType in ['video','content','seo','design','other'] && d.priority in ['low','normal','high','urgent']
+        && d.assigneeUids is list && d.assigneeUids.size() >= 1 && d.assigneeUids.size() <= 8
+        && d.assigneeUids.toSet().size() == d.assigneeUids.size()
+        && d.submittedUids is list && d.submittedUids.toSet().size() == d.submittedUids.size()
+        && d.assigneeUids.toSet().hasAll(d.submittedUids)
+        && d.assignments is map && d.contributions is map
+        && d.assignments.keys().toSet() == d.assigneeUids.toSet() && d.contributions.keys().toSet() == d.assigneeUids.toSet()
+        && text(d.createdByUid,128) && text(d.createdByName,120)
+        && d.status in ['todo','in_progress','needs_revision','waiting_review','done','cancelled']
+        && d.durationHours is number && d.durationHours >= 0.25 && d.durationHours <= 720
+        && d.deadlineAt is timestamp && d.createdAt is timestamp && d.deadlineAt > d.createdAt
+        && d.periodKey is string && d.periodKey.matches('^[0-9]{4}-[0-9]{2}$')
+        && d.updatedAt == request.time && publication(d)
+        && (d.status == 'done' ? d.completedAt is timestamp : d.completedAt == null);
+    }
+    function employeeReport() {
+      let d = request.resource.data;
+      return active() && request.auth.uid in resource.data.assigneeUids
+        && !(resource.data.status in ['done','cancelled'])
+        && d.diff(resource.data).affectedKeys().hasOnly(['contributions','submittedUids','updatedAt'])
+        && d.contributions.diff(resource.data.contributions).affectedKeys().hasOnly([request.auth.uid])
+        && d.updatedAt == request.time && ownSubmission(d);
+    }
+    function ownSubmission(d) {
+      let uid = request.auth.uid;
+      let c = d.contributions[uid];
+      let submitted = resource.data.submittedUids.toSet().difference([uid].toSet());
+      return validContribution(c,resource.data.assignments[uid]) && c.status in ['working','submitted']
+        && (resource.data.contributions[uid].status != 'submitted' || c.status == 'submitted')
+        && d.submittedUids is list && d.submittedUids.toSet().size() == d.submittedUids.size()
+        && d.submittedUids.toSet() == (c.status == 'submitted' ? submitted.union([uid].toSet()) : submitted)
+        && (c.status == 'submitted' ? c.submittedAt == request.time : c.submittedAt == null);
+    }
+    function managerUpdate() {
+      let d = request.resource.data;
+      return d.createdAt == resource.data.createdAt && d.createdByUid == resource.data.createdByUid && d.createdByName == resource.data.createdByName
+        && validReviewChange(d,'scriptReview') && validReviewChange(d,'mediaReview')
+        && (resource.data.status == 'done' ? d.diff(resource.data).affectedKeys().hasOnly(['requiresPublishing','plannedPublishDate','publicationStatus','publishedDate','postUrl','contentInfo','sku','skuNumber','updatedAt'])
+          : resource.data.status != 'cancelled' || (!hasSku(resource.data) && d.diff(resource.data).affectedKeys().hasOnly(['sku','skuNumber','updatedAt'])))
+        && (d.status != 'done' || resource.data.status == 'done' || (allSubmitted(resource.data) && d.completedAt == request.time))
+        && (d.status != 'needs_revision' || resource.data.status == 'needs_revision' || allSubmitted(resource.data));
+    }
+    match /users/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid || manager();
+      allow list: if manager();
+      allow create: if signedIn() && request.auth.uid == uid && request.auth.token.email_verified == true
+        && validUser(request.resource.data,uid) && request.resource.data.email == request.auth.token.email.lower()
+        && request.resource.data.role == 'employee' && request.resource.data.active == true && request.resource.data.createdAt == request.time;
+      allow update: if admin() && validUser(request.resource.data,uid)
+        && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.email == resource.data.email
+        && (request.auth.uid != uid || request.resource.data.active == true && request.resource.data.role == 'admin');
+      allow delete: if false;
+      match /deadlineReads/{taskId} {
+        allow read: if active() && request.auth.uid == uid;
+        allow create, update: if active() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['kind','deadlineAt','readAt'])
+          && request.resource.data.kind in ['soon','late'] && request.resource.data.readAt == request.time
+          && request.resource.data.deadlineAt == get(/databases/$(database)/documents/tasks/$(taskId)).data.deadlineAt
+          && (manager() || request.auth.uid in get(/databases/$(database)/documents/tasks/$(taskId)).data.assigneeUids);
+        allow delete: if false;
+      }
+    }
+    match /tasks/{id} {
+      allow read: if manager() || active() && request.auth.uid in resource.data.assigneeUids;
+      allow create: if manager() && validTask(request.resource.data)
+        && allocatedSku(request.resource.data,id)
+        && validContentInfo(request.resource.data.contentInfo)
+        && validReview(request.resource.data.scriptReview) && validReview(request.resource.data.mediaReview)
+        && request.resource.data.scriptReview.reviewedAt == null && request.resource.data.mediaReview.reviewedAt == null
+        && request.resource.data.createdByUid == request.auth.uid && request.resource.data.createdByName == me().fullName
+        && request.resource.data.createdAt == request.time && request.resource.data.status == 'todo' && request.resource.data.submittedUids.size() == 0;
+      allow update: if manager()
+        ? skuMigration(id) || (validSkuUpdate(request.resource.data,id) && managerUpdate() && validTask(request.resource.data) && validProductionUpdate(request.resource.data))
+        : employeeReport();
+      allow delete: if false;
+    }
+    match /counters/taskSku {
+      function allocation() {
+        let d = request.resource.data;
+        let target = getAfter(/databases/$(database)/documents/tasks/$(d.taskId)).data;
+        return manager() && d.keys().hasOnly(['value','taskId','updatedAt']) && d.value is int && d.value >= 1 && d.value <= 999999999
+          && text(d.taskId,128) && d.taskId != '' && d.updatedAt == request.time
+          && target.skuNumber == d.value && target.sku == skuFor(d.value)
+          && (!exists(/databases/$(database)/documents/tasks/$(d.taskId)) || !hasSku(get(/databases/$(database)/documents/tasks/$(d.taskId)).data));
+      }
+      allow get: if manager();
+      allow create: if allocation() && request.resource.data.value == 1;
+      allow update: if allocation() && request.resource.data.value == resource.data.value + 1;
+      allow delete: if false;
+    }
+    match /{document=**} { allow read,write: if false; }
+  }
+}
