@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { before, after, beforeEach, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing'
-import { arrayUnion, collection, doc, FieldPath, getDoc, getDocs, query, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore'
+import { arrayUnion, collection, deleteDoc, doc, FieldPath, getDoc, getDocs, query, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore'
 let env
 const claims = uid => ({email:uid+'@example.com',email_verified:true,firebase:{sign_in_provider:'google.com'}})
 const actor = uid => env.authenticatedContext(uid,claims(uid)).firestore()
@@ -99,6 +99,34 @@ test('khóa nhân viên ngăn truy cập; ADMIN không tự hạ quyền',async(
  await assertFails(updateDoc(doc(admin,'users','admin'),{role:'employee',updatedAt:serverTimestamp()}))
  await assertSucceeds(updateDoc(doc(admin,'users','content'),{active:false,updatedAt:serverTimestamp()}))
  await assertFails(getDoc(doc(actor('content'),'tasks','one')))
+})
+
+test('chỉ ADMIN đang hoạt động được xóa task; giữ nguyên bộ đếm và không dùng lại SKU',async()=>{
+ const admin=actor('admin')
+ await createTask(admin,'one');await createTask(admin,'keep')
+ for(const db of [actor('manager'),actor('content'),actor('extra0'),env.unauthenticatedContext().firestore()]) {
+  await assertFails(deleteDoc(doc(db,'tasks','one')))
+ }
+ await env.withSecurityRulesDisabled(ctx=>updateDoc(doc(ctx.firestore(),'users','admin'),{active:false}))
+ await assertFails(deleteDoc(doc(admin,'tasks','one')))
+ await env.withSecurityRulesDisabled(ctx=>updateDoc(doc(ctx.firestore(),'users','admin'),{active:true}))
+ const counterBefore=(await getDoc(doc(admin,'counters','taskSku'))).data()
+ await assertSucceeds(deleteDoc(doc(admin,'tasks','one')))
+ assert.equal((await getDoc(doc(admin,'tasks','one'))).exists(),false)
+ assert.equal((await getDoc(doc(admin,'tasks','keep'))).exists(),true)
+ assert.deepEqual((await getDoc(doc(admin,'counters','taskSku'))).data(),counterBefore)
+ // Deleting the most recently allocated SKU also must not reset the sequence.
+ await assertSucceeds(deleteDoc(doc(admin,'tasks','keep')))
+ await assertSucceeds(createTask(admin,'next'))
+ assert.equal((await getDoc(doc(admin,'tasks','next'))).data().sku,'vuatoi.0003')
+ for(const status of ['done','cancelled']) {
+  await createTask(admin,status)
+  await env.withSecurityRulesDisabled(ctx=>updateDoc(doc(ctx.firestore(),'tasks',status),{status}))
+  await assertFails(deleteDoc(doc(actor('manager'),'tasks',status)))
+  await assertFails(deleteDoc(doc(actor('content'),'tasks',status)))
+  await assertSucceeds(deleteDoc(doc(admin,'tasks',status)))
+  assert.equal((await getDoc(doc(admin,'tasks',status))).exists(),false)
+ }
 })
 
 test('đã đọc lưu theo tài khoản, không sửa hoặc đọc thông báo người khác',async()=>{

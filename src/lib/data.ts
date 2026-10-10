@@ -12,10 +12,11 @@ export interface DataApi {
   updateUser(uid: string, data: Pick<UserProfile, 'fullName' | 'role' | 'active'>): Promise<{ user: UserProfile }>
   tasks(period: string): Promise<{ tasks: MarketingTask[] }>
   task(id: string): Promise<{ task: MarketingTask }>
-  watchTask(id: string, next: (task: MarketingTask) => void, error: (error: Error) => void): () => void
+  watchTask(id: string, next: (task: MarketingTask | null) => void, error: (error: Error) => void): () => void
   watchTasks(user: UserProfile, period: string | null, next: (tasks: MarketingTask[]) => void, error: (error: Error) => void): () => void
   watchContentTasks(user: UserProfile, next: (tasks: MarketingTask[]) => void, error: (error: Error) => void): () => void
   createTask(data: TaskInput): Promise<{ task: MarketingTask }>
+  deleteTask(id: string): Promise<{ deletedId: string }>
   duplicateTask(id: string, count: number, deadlineAt: string): Promise<{ count: number; firstSku: string; lastSku: string; periodKey: string }>
   updateTask(id: string, data: TaskInput): Promise<{ task: MarketingTask }>
   renameTask(id: string, title: string): Promise<{ task: MarketingTask }>

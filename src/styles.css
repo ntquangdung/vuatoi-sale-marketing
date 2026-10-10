@@ -101,3 +101,20 @@ body{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-r
 .duplicate-panel>.form-error{margin-top:12px;margin-bottom:0}
 @media(max-width:1000px){.quick-row-fields{grid-template-columns:1fr 1fr}.duplicate-fields{grid-template-columns:1fr 1fr}.duplicate-fields>label:first-child{grid-column:1/-1}}
 @media(max-width:600px){.duplicate-panel{padding:16px}.duplicate-fields,.quick-row-fields{grid-template-columns:1fr}.duplicate-actions{align-items:stretch;flex-direction:column;gap:12px}.duplicate-heading{align-items:flex-start}.board-bottom-actions .board-add-row{font-size:11px;padding:12px}}
+
+/* ADMIN task deletion */
+.content-grid .grid-actions{position:sticky;right:0;background:#fff;z-index:2;box-shadow:-1px 0 0 #e5ebf3;text-align:center}
+.content-grid thead .grid-actions{z-index:5;background:#f7f9fc;font-size:11px}
+.grid-row-actions{display:flex;justify-content:center;gap:2px}
+.icon-button.delete-task-button{color:#ca4444}
+.icon-button.delete-task-button:hover{color:#a72929;background:#fff0f0}
+.detail-delete-action{display:flex;justify-content:flex-end;margin-top:22px;padding-top:18px;border-top:1px solid #edf1f6}
+.delete-task-confirmation{display:grid;gap:18px}
+.delete-task-icon{display:flex;align-items:center;justify-content:center;width:50px;height:50px;border-radius:14px;color:#c83d3d;background:#fff0f0}
+.delete-task-summary{padding:14px 16px;background:#f8faff;border:1px solid #e6ecf5;border-radius:10px;overflow-wrap:anywhere}
+.delete-task-summary>span{color:#1765db;font-size:12px;font-weight:600}
+.delete-task-summary h3{font-size:16px;font-weight:600;margin:5px 0}
+.delete-task-summary p{margin:0;color:#748299;font-size:12px}
+.delete-task-confirmation>p{font-size:13px;color:#61718a;line-height:1.7;margin:0}
+.button.danger{background:#c63e3e;color:#fff}
+.button.danger:hover:not(:disabled){background:#ae3030}

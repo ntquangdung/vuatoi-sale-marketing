@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CheckCircle2, Pencil } from 'lucide-react'
+import { CheckCircle2, Pencil, Trash2 } from 'lucide-react'
 import { api } from '../lib/data'
 import { formatDateTime } from '../lib/date'
 import { publicationLabel } from '../lib/labels'
@@ -8,7 +8,7 @@ import { reviewLabels, sourceLabels, stageState } from '../utils/content'
 import { Badge, Deadline, Link, workLabel } from './TaskUi'
 import { PublicationEditor } from './PublicationEditor'
 import type { MarketingTask, UserProfile } from '../types'
-export function TaskDetail({ task, user, now, edit, action }: { task: MarketingTask; user: UserProfile; now: number; edit: () => void; action: (fn: () => Promise<unknown>, message: string) => Promise<void> }) {
+export function TaskDetail({ task, user, now, edit, requestDelete, action }: { task: MarketingTask; user: UserProfile; now: number; edit: () => void; requestDelete: () => void; action: (fn: () => Promise<unknown>, message: string) => Promise<void> }) {
   const own = task.contributions[user.uid] || emptyContribution()
   const [report, setReport] = useState({ title: own.title, scriptUrl: own.scriptUrl, sourceUrl: own.sourceUrl, mediaUrl: own.mediaUrl, note: own.note })
   const [busy, setBusy] = useState(false); const [error, setError] = useState('')
@@ -32,5 +32,6 @@ export function TaskDetail({ task, user, now, edit, action }: { task: MarketingT
     {(manager || task.assigneeUids.includes(user.uid)) && task.requiresPublishing && task.status !== 'cancelled' && <section className="detail-section report-section"><h3>Đăng bài / video · {publicationLabel[task.publicationStatus]}</h3><PublicationEditor task={task} save={data => action(() => api.publish(task.id, data), 'Đã cập nhật lịch đăng.')} /></section>}
     {task.postUrl && <Link url={task.postUrl}>Xem bài đã đăng</Link>}{error && <p className="form-error">{error}</p>}
     {manager && !closed && <div className="detail-actions">{taskStatus(task) === 'waiting_review' && <><button className="button soft" disabled={busy} onClick={() => run(() => api.review(task.id, 'needs_revision'), 'Đã yêu cầu đội ngũ chỉnh sửa.')}>Yêu cầu chỉnh sửa</button><button className="button primary" disabled={busy} onClick={() => run(() => api.review(task.id, 'done'), 'Đã duyệt hoàn thành công việc.')}><CheckCircle2 size={16} />Duyệt hoàn thành</button></>}<button className="button danger-outline" disabled={busy} onClick={() => { if (window.confirm('Hủy công việc này? Kết quả đã nộp vẫn được giữ lại.')) void run(() => api.review(task.id, 'cancelled'), 'Đã hủy công việc.') }}>Hủy task</button></div>}
+    {user.role === 'admin' && <div className="detail-delete-action"><button className="button danger-outline" disabled={busy} onClick={requestDelete}><Trash2 size={16} />Xóa công việc</button></div>}
   </>
 }

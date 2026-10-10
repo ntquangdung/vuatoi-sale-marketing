@@ -1,5 +1,5 @@
 import { GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth'
-import { arrayRemove, arrayUnion, collection, doc, FieldPath, getDoc, getDocs, onSnapshot, query, runTransaction, serverTimestamp, Timestamp, updateDoc, where, type DocumentData, type DocumentReference, type DocumentSnapshot, type Transaction } from 'firebase/firestore'
+import { arrayRemove, arrayUnion, collection, deleteDoc, doc, FieldPath, getDoc, getDocs, onSnapshot, query, runTransaction, serverTimestamp, Timestamp, updateDoc, where, type DocumentData, type DocumentReference, type DocumentSnapshot, type Transaction } from 'firebase/firestore'
 import type { Assignment, ContentInfo, Contribution, MarketingTask, StageReview, TaskInput, UserProfile } from '../types'
 import { ApiError } from './api'
 import { firebaseAuth, firestore } from './firebase'
@@ -157,10 +157,18 @@ export const firebaseApi: DataApi = {
     try { return { tasks: (await getDocs(taskQuery(user, period))).docs.map(task).sort((a, b) => a.deadlineAt.localeCompare(b.deadlineAt)) } } catch (error) { message(error) }
   },
   async task(id) { await currentUser(); return { task: await getTask(id) } },
+  async deleteTask(id) {
+    const actor = await currentUser()
+    if (actor.role !== 'admin') throw new ApiError('Chỉ ADMIN được xóa công việc.', 403)
+    try {
+      await deleteDoc(doc(services().db, 'tasks', id))
+      return { deletedId: id }
+    } catch (error) { message(error) }
+  },
   watchTask(id, next, error) {
     return onSnapshot(doc(services().db,'tasks',id), snapshot => {
       if (snapshot.exists()) next(task(snapshot))
-      else error(new Error('Không tìm thấy công việc.'))
+      else next(null)
     }, err => error(err))
   },
   watchTasks(user, period, next, error) {

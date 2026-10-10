@@ -11,6 +11,7 @@ import { alertKey, markAlertsRead, watchReadAlerts } from './lib/notifications'
 import { GoogleLogin } from './components/GoogleLogin'
 import { TaskForm } from './components/TaskForm'
 import { TaskDetail } from './components/TaskDetail'
+import { DeleteTaskDialog } from './components/DeleteTaskDialog'
 import { UserForm } from './components/UserForm'
 import { ContentBoard } from './components/ContentBoard'
 import { Badge, Deadline, Empty, Loading, Modal, workLabel } from './components/TaskUi'
@@ -26,6 +27,7 @@ export default function App() {
   const [menu, setMenu] = useState(false); const [sidebarCollapsed,setSidebarCollapsed] = useState(() => localStorage.getItem('mkt-sidebar-collapsed') === 'true'); const [inbox, setInbox] = useState(false)
   const [taskId, setTaskId] = useState<string | null>(null); const [taskFallback, setTaskFallback] = useState<MarketingTask | null>(null)
   const [liveTask, setLiveTask] = useState<MarketingTask | null>(null)
+  const [deletingTask, setDeletingTask] = useState<MarketingTask | null>(null)
   const [editing, setEditing] = useState<MarketingTask | null | 'new'>(null); const [editingUser, setEditingUser] = useState<UserProfile | null>(null)
   const [search, setSearch] = useState(''); const [status, setStatus] = useState(''); const [assignee, setAssignee] = useState(''); const [lateOnly, setLateOnly] = useState(false)
   const [now, setNow] = useState(Date.now()); const [reloadKey, setReloadKey] = useState(0)
@@ -35,7 +37,7 @@ export default function App() {
   const notify = useCallback((text: string, error = false) => setNotice({ text, error }), [])
   function ready(u: UserProfile) {
     setUser(u); setPage(u.role === 'employee' ? 'tasks' : 'dashboard'); setAuthError('')
-    setAssignee(''); setStatus(''); setSearch(''); setLateOnly(false); setInbox(false); setEditing(null); setEditingUser(null)
+    setAssignee(''); setStatus(''); setSearch(''); setLateOnly(false); setInbox(false); setEditing(null); setEditingUser(null); setDeletingTask(null)
   }
   useEffect(() => { if (firebaseConfigError) { setAuthLoading(false); return }; api.me().then(r => ready(r.user)).catch(e => { if (!(e instanceof ApiError && e.status === 401)) setAuthError(e.message) }).finally(() => setAuthLoading(false)) }, [])
   useEffect(() => {
@@ -62,7 +64,7 @@ export default function App() {
     const stopActive = api.watchTasks(user, null, setActiveTasks, e => { setActiveTasks([]); setLoadError(e.message) })
     const stopMe = onSnapshot(doc(firestore, 'users', user.uid), snap => {
       if (snap.exists() && (!snap.data().active || snap.data().role !== user.role || snap.data().fullName !== user.fullName)) {
-        setTasks([]); setActiveTasks([]); setUsers([]); setTaskId(null); setTaskFallback(null)
+        setTasks([]); setActiveTasks([]); setUsers([]); setTaskId(null); setTaskFallback(null); setDeletingTask(null)
         if (!snap.data().active) { void api.logout(); setUser(null); setAuthError('Tài khoản đã bị khóa. Liên hệ ADMIN.') }
         else ready({ ...user, ...snap.data() } as UserProfile)
       }
@@ -78,7 +80,7 @@ export default function App() {
   useEffect(() => {
     setLiveTask(null)
     if (!taskId || !user) return
-    return api.watchTask(taskId,setLiveTask,e => { setTaskId(null); notify(e.message,true) })
+    return api.watchTask(taskId,value => { setLiveTask(value); if (!value) { setTaskId(null); setTaskFallback(null) } },e => { setTaskId(null); notify(e.message,true) })
   }, [taskId,user?.uid,notify])
   const alerts = useMemo(() => activeTasks.filter(t => deadlineAlert(t, now, manager ? undefined : user?.uid)), [activeTasks, now, manager, user?.uid])
   const unread = alerts.filter(t => readAlerts[t.id] !== alertKey(t,deadlineAlert(t,now,manager ? undefined : user?.uid)!))
@@ -88,9 +90,18 @@ export default function App() {
     if (user && deadlineAlert(t,now,manager ? undefined : user.uid)) void markAlertsRead(user.uid,[t],now,manager ? undefined : user.uid).catch(() => notify('Chưa lưu được trạng thái đã đọc.',true))
   }
   async function action(fn: () => Promise<unknown>, message: string) { const result = await fn() as { task?: MarketingTask }; if (result?.task) setTaskFallback(result.task); notify(message) }
+  function requestDelete(task: MarketingTask) {
+    if (user?.role !== 'admin') return
+    setTaskId(null); setTaskFallback(null); setLiveTask(null); setDeletingTask(task)
+  }
+  function taskDeleted(id: string) {
+    setTasks(values => values.filter(t => t.id !== id)); setActiveTasks(values => values.filter(t => t.id !== id))
+    setTaskId(value => value === id ? null : value); setTaskFallback(value => value?.id === id ? null : value); setLiveTask(value => value?.id === id ? null : value)
+    setDeletingTask(null); notify('Đã xóa công việc. SKU đã cấp sẽ không được sử dụng lại.')
+  }
   async function logout() {
     if (!user) return
-    try { await api.logout(); setUser(null); setTasks([]); setActiveTasks([]); setUsers([]); setTaskId(null); setTaskFallback(null); setEditing(null); setInbox(false) } catch (e) { notify((e as Error).message, true) }
+    try { await api.logout(); setUser(null); setTasks([]); setActiveTasks([]); setUsers([]); setTaskId(null); setTaskFallback(null); setEditing(null); setDeletingTask(null); setInbox(false) } catch (e) { notify((e as Error).message, true) }
   }
   async function readAllAlerts() {
     if (!user) return
@@ -121,11 +132,12 @@ export default function App() {
       <section className="panel upcoming"><div className="panel-heading"><div><h2>Deadline cần theo dõi</h2><p>Các công việc sắp đến hạn</p></div><Clock3 size={18} /></div>{activeTasks.filter(t => !['done', 'cancelled', 'waiting_review'].includes(taskStatus(t))).slice(0, 6).map(t => <button className="upcoming-item" key={t.id} onClick={() => openTask(t)}><span className={`upcoming-line ${deadlineState(t, now) === 'late' ? 'late' : ''}`} /><span className="upcoming-content"><b>{t.title}</b><small>{Object.values(t.assignments).map(a => a.fullName).join(', ')}</small></span><Deadline task={t} now={now} /></button>)}{!activeTasks.length && <Empty title="Chưa có công việc" text="Tạo task và giao phần việc cho đội ngũ." />}</section></div></>}</>}
     {page === 'tasks' && <section className="panel task-panel"><div className="filter-row"><div className="search-box"><Search size={17} /><input aria-label="Tìm công việc" value={search} onChange={e => setSearch(e.target.value)} placeholder="Tìm công việc, nhân viên…" /></div><select aria-label="Lọc trạng thái" value={status} onChange={e => setStatus(e.target.value)}><option value="">Tất cả trạng thái</option>{statuses.map(s => <option key={s} value={s}>{statusLabel[s]}</option>)}</select>{manager && <select aria-label="Lọc nhân viên" value={assignee} onChange={e => setAssignee(e.target.value)}><option value="">Tất cả nhân viên</option>{users.filter(u => u.role === 'employee').map(u => <option value={u.uid} key={u.uid}>{u.fullName}</option>)}</select>}<label className="filter-check"><input type="checkbox" checked={lateOnly} onChange={e => setLateOnly(e.target.checked)} />Chỉ trễ hạn</label></div>
       {loading ? <Loading /> : filtered.length ? <div className="task-cards">{filtered.map(t => <button className="task-card" key={t.id} onClick={() => openTask(t)}><div className="task-card-top"><span className="task-kind">{typeLabel[t.taskType]}</span><Badge task={t} /></div><h3>{t.title}</h3><p>{t.description || 'Chưa có mô tả'}</p><div className="task-members">{t.assigneeUids.map(uid => <span key={uid} title={workLabel[t.assignments[uid].workRole]}><i className="avatar tiny">{t.assignments[uid].fullName[0]}</i>{t.assignments[uid].fullName}<b>{t.contributions[uid]?.status === 'submitted' ? '✓' : ''}</b></span>)}</div><div className="task-card-bottom"><Deadline task={t} now={now} /><span>{t.assigneeUids.filter(uid => t.contributions[uid]?.status === 'submitted').length}/{t.assigneeUids.length} đã nộp</span></div></button>)}</div> : <Empty title="Chưa có công việc phù hợp" text={manager ? 'Tạo công việc mới hoặc đổi bộ lọc.' : 'Công việc được giao sẽ hiển thị tại đây.'} />}<div className="table-footer">{filtered.length} công việc · {monthLabel(month)}</div></section>}
-    {page === 'content' && manager && <ContentBoard tasks={tasks} users={users} onCreated={periodKey => setMonth(periodKey)} user={user} now={now} loading={loading} openTask={openTask} action={action} />}
+    {page === 'content' && manager && <ContentBoard tasks={tasks} users={users} onCreated={periodKey => setMonth(periodKey)} user={user} now={now} loading={loading} openTask={openTask} requestDelete={requestDelete} action={action} />}
     {page === 'users' && manager && <section className="panel"><div className="users-summary"><div><span className="users-summary-icon"><Users size={21} /></span><p><b>{users.length} thành viên</b><small>Thành viên mới mặc định là nhân viên; ADMIN quản lý vai trò và khóa tài khoản.</small></p></div></div><div className="table-scroll"><table><thead><tr><th>Nhân viên</th><th>Email Google</th><th>Vai trò</th><th>Trạng thái</th>{user.role === 'admin' && <th />}</tr></thead><tbody>{users.map(u => <tr key={u.uid}><td><span className="person-cell"><span className="avatar small">{u.fullName[0]}</span><b>{u.fullName}</b></span></td><td>{u.email}</td><td>{roleLabel[u.role]}</td><td><span className={`user-status ${u.active ? 'active' : 'inactive'}`}><i />{u.active ? 'Hoạt động' : 'Đã khóa'}</span></td>{user.role === 'admin' && <td><button className="icon-button" aria-label={`Sửa nhân sự ${u.fullName}`} onClick={() => setEditingUser(u)}><Pencil size={16} /></button></td>}</tr>)}</tbody></table></div></section>}
     {page === 'settings' && <><div className="settings-grid"><section className="panel settings-panel"><h2>Tài khoản Google</h2><div className="settings-person"><span className="avatar large">{user.fullName[0]}</span><div><b>{user.fullName}</b><small>{user.email}</small></div></div><div className="settings-row"><span>Vai trò</span><b>{roleLabel[user.role]}</b></div><div className="settings-row"><span>Không gian</span><b>SALE - MARKETING · VUA TỎI</b></div><p className="form-help">Tài khoản mới tự nhận quyền nhân viên. ADMIN có thể thay đổi vai trò trong mục Nhân sự.</p></section><section className="panel settings-panel"><h2>Thông báo trong tài khoản</h2><p className="muted">Cảnh báo tại biểu tượng chuông khi còn tối đa 30 phút và khi quá deadline.</p><div className="settings-row"><span>Trạng thái</span><b>Đang hoạt động</b></div><div className="settings-row"><span>Phạm vi của bạn</span><b>{manager ? 'Toàn đội SALE - MARKETING' : 'Phần việc được giao'}</b></div><div className="settings-row"><span>Chưa đọc</span><b>{unread.length} thông báo</b></div><button className="button soft" onClick={() => setInbox(true)}><Bell size={16} />Mở thông báo</button><p className="form-help">Người đã nộp không bị nhắc tiếp. ADMIN và quản lý được nhắc đến khi cả đội nộp đủ. Trạng thái đã đọc được lưu theo tài khoản.</p></section></div><section className="panel help-panel"><ShieldCheck size={21} /><div><h2>Phần việc và deadline</h2><p>Mỗi người nộp kết quả riêng trong cùng task. Khi đủ kết quả, task chuyển sang chờ duyệt. Thời gian nộp đủ được dùng để đánh giá đúng hạn, dù ADMIN duyệt sau đó.</p></div></section></>}
     </main></div>
-    {taskId && chosenTask && <Modal title={chosenTask.title} close={() => setTaskId(null)}><TaskDetail key={chosenTask.id} task={chosenTask} user={user} now={now} edit={() => { setEditing(chosenTask); setTaskId(null) }} action={action} /></Modal>}
+    {taskId && chosenTask && <Modal title={chosenTask.title} close={() => setTaskId(null)}><TaskDetail key={chosenTask.id} task={chosenTask} user={user} now={now} edit={() => { setEditing(chosenTask); setTaskId(null) }} requestDelete={() => requestDelete(chosenTask)} action={action} /></Modal>}
+    {deletingTask && user.role === 'admin' && <DeleteTaskDialog key={deletingTask.id} task={deletingTask} close={() => setDeletingTask(null)} deleted={taskDeleted} />}
     {editing && <Modal title={editing === 'new' ? 'Tạo công việc' : 'Sửa công việc'} close={() => setEditing(null)}><TaskForm existing={editing === 'new' ? undefined : editing} users={users} save={async data => { await action(() => editing === 'new' ? api.createTask(data) : api.updateTask(editing.id, data), editing === 'new' ? 'Đã giao công việc cho đội ngũ.' : 'Đã cập nhật công việc.'); setEditing(null) }} /></Modal>}
     {editingUser && <Modal title="Cập nhật nhân sự" close={() => setEditingUser(null)}><UserForm user={editingUser} save={async data => { await action(() => api.updateUser(editingUser.uid, data), 'Đã cập nhật nhân sự.'); setEditingUser(null) }} /></Modal>}
     {notice && <div className={`notice ${notice.error ? 'error' : 'success'}`} role="status"><span><CheckCircle2 size={18} /></span><p>{notice.text}</p><button className="icon-button" aria-label="Đóng" onClick={() => setNotice(null)}><X size={16} /></button></div>}

@@ -163,7 +163,7 @@ service cloud.firestore {
       allow update: if manager()
         ? skuMigration(id) || (validSkuUpdate(request.resource.data,id) && managerUpdate() && validTask(request.resource.data) && validProductionUpdate(request.resource.data))
         : employeeReport() || employeePublication();
-      allow delete: if false;
+      allow delete: if admin();
     }
     match /counters/taskSku {
       function allocation() {
