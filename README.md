@@ -25,7 +25,7 @@ Không đưa service account hoặc thông tin đăng nhập vào frontend/Git.
 - Chỉ đăng nhập Google; lần đầu tự tạo hồ sơ **nhân viên**.
 - ADMIN hiện tại: **dungbadao0704@gmail.com**; đăng nhập lại giữ nguyên quyền này.
 - Nhân viên xem task được giao và sửa phần việc của mình.
-- ADMIN quản lý tên, vai trò, khóa/mở nhân sự; không tự khóa hoặc tự hạ quyền.
+- ADMIN quản lý tên, vai trò; không tự khóa hoặc tự hạ quyền. ADMIN và quản lý có thể **Thu hồi quyền / Cấp lại quyền** cho nhân viên tại Nhân sự. Hồ sơ Google được giữ với `active: false` và chặn theo email trong `employeeAccess`; không xóa tài khoản hay dữ liệu task. Email bị thu hồi không thể tự đăng ký hồ sơ khác, kể cả khi UID Firebase Auth thay đổi. Tên và kết quả trong task cũ giữ nguyên; người bị thu hồi không nhận phần việc mới. Dùng tab **Đã thu hồi quyền** để tìm và cấp lại quyền.
 - Quản lý xem toàn đội, giao và duyệt task; không quản lý vai trò.
 - Firebase UID dùng nội bộ, không hiển thị trong giao diện.
 
@@ -54,6 +54,7 @@ Mục **Bảng nội dung** dùng chung dữ liệu với Công việc. Mỗi d�
   Bấm **Lưu dòng** để cấp SKU và đồng bộ vào cùng dữ liệu Công việc; không cần mở form Tạo công việc.
 
 - SKU tự tăng `vuatoi.0001`, `vuatoi.0002`… bằng transaction Firestore. Hai người tạo cùng lúc không trùng mã.
+- ADMIN bấm bút chì cạnh SKU để đổi mã (1–80 ký tự không dấu, chữ thường, số, `.`, `_`, `-`). Kiểm tra mã trùng trên Firestore trong giao dịch dùng chung bộ đếm với tạo / sao chép và các lần đổi SKU. Xóa task không giảm bộ đếm hoặc lấp số cũ. Nếu đổi sang `vuatoi.N` lớn hơn bộ đếm, dãy tự động tiếp tục từ N+1. Số thứ tự nội bộ `skuNumber` giữ nguyên để không đảo lịch sử tạo.
 - Task cũ được cấp mã một lần khi quản lý mở bảng; giữ nguyên người giao, deadline và kết quả đã nộp.
 - Các cột gồm Page, Content, loại video, tuyến nội dung, độ tuổi, đối tượng, chiến dịch / sản phẩm,
   tiêu đề nội dung, link kịch bản, duyệt kịch bản, source / link source, Media / link edit,
@@ -91,6 +92,7 @@ Firebase hiện dùng Spark; mức sử dụng chịu hạn mức của gói mi�
 Firestore `(default)` tại Singapore:
 
 - `users/{uid}`: tên, email Google, vai trò, trạng thái hoạt động.
+- `employeeAccess/{email}`: chặn / cấp lại quyền theo email Google, ghi nguyên tử cùng hồ sơ; nhân viên chỉ đọc được trạng thái của chính mình.
 - `tasks/{id}`: SKU, yêu cầu, người được giao, kết quả từng người, thông tin nội dung, duyệt kịch bản / media,
   deadline và thông tin đăng bài.
 - `counters/taskSku`: số thứ tự SKU và task được cấp gần nhất, cập nhật nguyên tử cùng task; nhân viên không truy cập được.

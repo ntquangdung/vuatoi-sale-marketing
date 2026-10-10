@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { emptyContentInfo, emptyReview, skuFor, stageSignature, stageState } from './content'
+import { emptyContentInfo, emptyReview, normalizeSku, skuFor, skuSequence, stageSignature, stageState } from './content'
 import { emptyContribution } from './tasks'
 import type { MarketingTask } from '../types'
 
@@ -11,6 +11,13 @@ function task(): MarketingTask {
 }
 function approve(t: MarketingTask, stage:'script'|'media') { t[stage==='script'?'scriptReview':'mediaReview']={status:'approved',byUid:'admin',byName:'Admin',signature:stageSignature(t,stage),reviewedAt:'2026-10-10T02:00:00.000Z'} }
 describe('SKU và duyệt theo từng phần việc',()=>{
+  it('chuẩn hóa SKU sửa tay và nhận số trong dãy tự động',()=>{
+    expect(normalizeSku(' VUATOI.008 ')).toBe('vuatoi.0008')
+    expect(normalizeSku('VUATOI-VIDEO_01')).toBe('vuatoi-video_01')
+    expect(skuSequence(normalizeSku('vuatoi.00099'))).toBe(99)
+    expect(skuSequence('vuatoi-video_01')).toBe(0)
+    for (const invalid of ['', 'mã tỏi', 'vuatoi/one', 'vuatoi.0000', 'vuatoi.1000000000', 'a'.repeat(81)]) expect(()=>normalizeSku(invalid)).toThrow()
+  })
   it('SKU giữ dãy tăng liên tục khi vượt 9999',()=>{
     expect(skuFor(1)).toBe('vuatoi.0001');expect(skuFor(9999)).toBe('vuatoi.9999');expect(skuFor(10000)).toBe('vuatoi.10000');expect(()=>skuFor(0)).toThrow()
   })

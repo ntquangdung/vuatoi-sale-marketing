@@ -1,11 +1,11 @@
 import { GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth'
-import { arrayRemove, arrayUnion, collection, doc, FieldPath, getDoc, getDocs, onSnapshot, query, runTransaction, serverTimestamp, Timestamp, updateDoc, where, writeBatch, type DocumentData, type DocumentReference, type DocumentSnapshot, type Transaction } from 'firebase/firestore'
+import { arrayRemove, arrayUnion, collection, doc, FieldPath, getDoc, getDocs, getDocsFromServer, onSnapshot, query, runTransaction, serverTimestamp, Timestamp, updateDoc, where, writeBatch, type DocumentData, type DocumentReference, type DocumentSnapshot, type Transaction } from 'firebase/firestore'
 import type { Assignment, ContentInfo, Contribution, MarketingTask, StageReview, TaskInput, UserProfile } from '../types'
 import { ApiError } from './api'
 import { firebaseAuth, firestore } from './firebase'
 import type { DataApi } from './data'
 import { emptyContribution, periodAt, taskStatus, validLink } from '../utils/tasks'
-import { ageOptions, emptyContentInfo, emptyReview, skuFor, stageMembers, stageSignature } from '../utils/content'
+import { ageOptions, emptyContentInfo, emptyReview, normalizeSku, skuFor, skuSequence, stageMembers, stageSignature } from '../utils/content'
 import { copyTaskInput, validateCopyCount } from '../utils/duplicate'
 
 function services() {
@@ -44,13 +44,21 @@ async function currentUser(): Promise<UserProfile> {
   try {
     const ref = doc(db, 'users', google.uid)
     await runTransaction(db, async tx => {
+      const access = await tx.get(doc(db, 'employeeAccess', google.email!.toLowerCase()))
+      if (access.exists() && !access.data().active) throw new ApiError('Tài khoản đã bị thu hồi quyền truy cập. Liên hệ ADMIN hoặc quản lý để được cấp lại quyền.', 403)
       if ((await tx.get(ref)).exists()) return
       tx.set(ref, { uid: google.uid, fullName: (google.displayName || google.email?.split('@')[0] || 'Nhân viên').slice(0, 120), email: google.email!.toLowerCase(), role: 'employee', active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp() })
     })
     const user = profile(await getDoc(ref))
-    if (!['admin', 'manager', 'employee'].includes(user.role) || !user.active) throw new ApiError('Tài khoản đã bị khóa. Vui lòng liên hệ ADMIN.', 403)
+    if (!['admin', 'manager', 'employee'].includes(user.role) || !user.active) {
+      await signOut(auth)
+      throw new ApiError('Tài khoản đã bị thu hồi quyền truy cập. Liên hệ ADMIN hoặc quản lý để được cấp lại quyền.', 403)
+    }
     return user
-  } catch (error) { message(error) }
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 403 && auth.currentUser?.uid === google.uid) await signOut(auth)
+    message(error)
+  }
 }
 async function requireManager() {
   const user = await currentUser()
@@ -83,12 +91,14 @@ function validateContentInfo(info: ContentInfo) {
   if (typeof info.sourceUrl !== 'string' || info.sourceUrl.length > 2000 || !validLink(info.sourceUrl)) throw new Error('Link source cần là http:// hoặc https:// hợp lệ.')
   if (!['not_started','shooting','recorded'].includes(info.sourceStatus)) throw new Error('Trạng thái source không hợp lệ.')
 }
-async function assignmentsFor(data: TaskInput): Promise<Record<string, Assignment>> {
+async function assignmentsFor(data: TaskInput, before?: MarketingTask): Promise<Record<string, Assignment>> {
   const result: Record<string, Assignment> = {}
   for (const a of data.assignees) {
     const snapshot = await getDoc(doc(services().db, 'users', a.uid))
-    if (!snapshot.exists() || !snapshot.data().active || snapshot.data().role !== 'employee') throw new Error('Chọn nhân viên đang hoạt động.')
-    result[a.uid] = { fullName: snapshot.data().fullName, workRole: a.workRole }
+    if (!snapshot.exists() || !snapshot.data().active || snapshot.data().role !== 'employee') {
+      if (before?.assignments[a.uid]?.workRole !== a.workRole) throw new Error('Chỉ giao phần việc mới cho nhân viên đang hoạt động.')
+      result[a.uid] = before.assignments[a.uid]
+    } else result[a.uid] = { fullName: snapshot.data().fullName, workRole: a.workRole }
   }
   return result
 }
@@ -113,18 +123,21 @@ async function allocateSku(write: (tx: Transaction, counter: DocumentReference, 
   const db = services().db, counter = doc(db, 'counters', 'taskSku')
   for (let attempt = 0; ; attempt++) {
     let previousValue: number | null = null
+    let previousRevision = ''
     try {
       await runTransaction(db, async tx => {
-        previousValue = (await tx.get(counter)).data()?.value || 0
+        const before = (await tx.get(counter)).data()
+        previousValue = before?.value || 0
+        previousRevision = before?.updatedAt?.toString() || ''
         await write(tx, counter, previousValue! + 1)
       })
       return
     } catch (error) {
       // Some Firestore evaluations reject a stale counter before the SDK reports a conflict.
-      // Retry only a failed atomic write whose counter actually advanced; stable refs avoid duplicates.
+      // Retry only a failed atomic write whose counter changed; stable refs avoid duplicates.
       if (attempt < 3 && previousValue !== null && (error as {code?: string}).code === 'permission-denied') {
-        const current = (await getDoc(counter)).data()?.value || 0
-        if (current !== previousValue) continue
+        const current = (await getDoc(counter)).data()
+        if ((current?.value || 0) !== previousValue || (current?.updatedAt?.toString() || '') !== previousRevision) continue
       }
       throw error
     }
@@ -159,8 +172,28 @@ export const firebaseApi: DataApi = {
     if (actor.role !== 'admin') throw new ApiError('Chỉ ADMIN được sửa nhân sự.', 403)
     if (uid === actor.uid && (!data.active || data.role !== 'admin')) throw new Error('Không thể tự khóa hoặc hạ quyền ADMIN đang đăng nhập.')
     try {
-      const ref = doc(services().db, 'users', uid)
-      await updateDoc(ref, { fullName: data.fullName.trim(), role: data.role, active: data.active, updatedAt: serverTimestamp() })
+      const db = services().db, ref = doc(db, 'users', uid)
+      await runTransaction(db, async tx => {
+        const before = await tx.get(ref)
+        if (!before.exists()) throw new Error('Không tìm thấy nhân sự.')
+        tx.update(ref, { fullName: data.fullName.trim(), role: data.role, active: data.active, updatedAt: serverTimestamp() })
+        if (before.data().active !== data.active) tx.set(doc(db, 'employeeAccess', before.data().email), { uid, email: before.data().email, active: data.active, updatedAt: serverTimestamp() })
+      })
+      return { user: profile(await getDoc(ref)) }
+    } catch (error) { message(error) }
+  },
+  async setEmployeeAccess(uid, active) {
+    await requireManager()
+    try {
+      const db = services().db, ref = doc(db, 'users', uid)
+      await runTransaction(db, async tx => {
+        const snapshot = await tx.get(ref)
+        if (!snapshot.exists() || snapshot.data().role !== 'employee') throw new Error('Chức năng này chỉ áp dụng cho tài khoản nhân viên.')
+        // Keep the Google UID/profile and assignment snapshots. The email entry also
+        // blocks re-enrollment if Firebase Auth later gives the Google account a new UID.
+        tx.update(ref, { active, updatedAt: serverTimestamp() })
+        tx.set(doc(db, 'employeeAccess', snapshot.data().email), { uid, email: snapshot.data().email, active, updatedAt: serverTimestamp() })
+      })
       return { user: profile(await getDoc(ref)) }
     } catch (error) { message(error) }
   },
@@ -228,8 +261,8 @@ export const firebaseApi: DataApi = {
   async updateTask(id, data) {
     await requireManager(); validateTask(data)
     try {
-      const assignments = await assignmentsFor(data)
       const ref = doc(services().db, 'tasks', id)
+      const assignments = await assignmentsFor(data, await getTask(id))
       await runTransaction(services().db, async tx => {
         const snapshot = await tx.get(ref)
         if (!snapshot.exists()) throw new Error('Không tìm thấy công việc.')
@@ -257,6 +290,27 @@ export const firebaseApi: DataApi = {
         const snapshot = await tx.get(ref)
         if (!snapshot.exists() || ['done', 'cancelled'].includes(snapshot.data().status)) throw new Error('Không thể sửa công việc đã đóng.')
         tx.update(ref, { title: title.trim(), updatedAt: serverTimestamp() })
+      })
+      return { task: await getTask(id) }
+    } catch (error) { message(error) }
+  },
+  async renameSku(id, value) {
+    const actor = await currentUser()
+    if (actor.role !== 'admin') throw new ApiError('Chỉ ADMIN được sửa SKU.', 403)
+    const sku = normalizeSku(value), manualNumber = skuSequence(sku)
+    try {
+      const db = services().db, ref = doc(db, 'tasks', id)
+      await allocateSku(async (tx, counter) => {
+        const sequence = await tx.get(counter), snapshot = await tx.get(ref)
+        if (!snapshot.exists()) throw new Error('Không tìm thấy công việc.')
+        if (snapshot.data().sku === sku) return
+        if (!snapshot.data().sku || !sequence.exists()) throw new Error('Đợi cấp SKU tự động trước khi sửa.')
+        // Every allocation and rename writes this same counter. A concurrent change retries
+        // this fresh server query, so two clients cannot commit the same SKU through this API.
+        const matches = await getDocsFromServer(query(collection(db, 'tasks'), where('sku', '==', sku)))
+        if (matches.docs.some(match => match.id !== id)) throw new Error('SKU này đang được sử dụng. Chọn một mã khác.')
+        tx.set(counter, { value: Math.max(sequence.data().value, manualNumber), taskId: id, manualSku: sku, manualNumber, updatedAt: serverTimestamp() })
+        tx.update(ref, { sku, updatedAt: serverTimestamp() })
       })
       return { task: await getTask(id) }
     } catch (error) { message(error) }

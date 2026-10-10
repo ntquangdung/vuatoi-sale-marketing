@@ -10,6 +10,7 @@ export interface DataApi {
   me(): Promise<{ user: UserProfile }>
   users(): Promise<{ users: UserProfile[] }>
   updateUser(uid: string, data: Pick<UserProfile, 'fullName' | 'role' | 'active'>): Promise<{ user: UserProfile }>
+  setEmployeeAccess(uid: string, active: boolean): Promise<{ user: UserProfile }>
   tasks(period: string): Promise<{ tasks: MarketingTask[] }>
   task(id: string): Promise<{ task: MarketingTask }>
   watchTask(id: string, next: (task: MarketingTask | null) => void, error: (error: Error) => void): () => void
@@ -21,6 +22,7 @@ export interface DataApi {
   duplicateTask(id: string, count: number, deadlineAt: string): Promise<{ count: number; firstSku: string; lastSku: string; periodKey: string }>
   updateTask(id: string, data: TaskInput): Promise<{ task: MarketingTask }>
   renameTask(id: string, title: string): Promise<{ task: MarketingTask }>
+  renameSku(id: string, sku: string): Promise<{ task: MarketingTask }>
   ensureSkus(ids: string[]): Promise<void>
   updateContentInfo(id: string, changes: Partial<ContentInfo>): Promise<{ task: MarketingTask }>
   reviewStage(id: string, stage: ReviewStage, status: 'approved' | 'needs_revision'): Promise<{ task: MarketingTask }>

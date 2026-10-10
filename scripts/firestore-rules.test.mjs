@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { before, after, beforeEach, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing'
-import { arrayUnion, collection, deleteDoc, doc, FieldPath, getDoc, getDocs, query, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch } from 'firebase/firestore'
+import { arrayUnion, collection, deleteDoc, doc, FieldPath, getDoc, getDocs, getDocsFromServer, query, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch } from 'firebase/firestore'
 let env
 const claims = uid => ({email:uid+'@example.com',email_verified:true,firebase:{sign_in_provider:'google.com'}})
 const actor = uid => env.authenticatedContext(uid,claims(uid)).firestore()
@@ -11,6 +11,13 @@ const empty = () => ({title:'',scriptUrl:'',sourceUrl:'',mediaUrl:'',note:'',sta
 const contentInfo = () => ({pageName:'Vua Tỏi',videoType:'Giáo dục',contentLine:'Tuyến 1',ageGroups:['25–34'],audience:'Khách hàng',campaign:'',thumbnailUrl:'',sourceUrl:'',sourceStatus:'not_started'})
 const emptyReview = () => ({status:'pending',byUid:'',byName:'',signature:'',reviewedAt:null})
 const skuFor = n => 'vuatoi.'+String(n).padStart(4,'0')
+async function setAccess(db,uid,active) {
+ return runTransaction(db,async tx=>{
+  const ref=doc(db,'users',uid),user=await tx.get(ref)
+  tx.update(ref,{active,updatedAt:serverTimestamp()})
+  tx.set(doc(db,'employeeAccess',user.data().email),{uid,email:user.data().email,active,updatedAt:serverTimestamp()})
+ })
+}
 async function createTask(db,id,value=taskValue()) {
  return allocateSku(db,async (tx,counter,skuNumber)=>{
   tx.set(counter,{value:skuNumber,taskId:id,updatedAt:serverTimestamp()})
@@ -20,10 +27,10 @@ async function createTask(db,id,value=taskValue()) {
 async function allocateSku(db,write) {
  const counter=doc(db,'counters','taskSku')
  for(let attempt=0;;attempt++) {
-  let previous=null
-  try { return await runTransaction(db,async tx=>{previous=(await tx.get(counter)).data()?.value||0;return write(tx,counter,previous+1)}) }
+  let previous=null,revision=''
+  try { return await runTransaction(db,async tx=>{const before=(await tx.get(counter)).data();previous=before?.value||0;revision=before?.updatedAt?.toString()||'';return write(tx,counter,previous+1)}) }
   catch(error) {
-   if(attempt<3&&previous!==null&&error.code==='permission-denied'&&((await getDoc(counter)).data()?.value||0)!==previous) continue
+   if(attempt<3&&previous!==null&&error.code==='permission-denied') {const fresh=(await getDoc(counter)).data();if((fresh?.value||0)!==previous||(fresh?.updatedAt?.toString()||'')!==revision)continue}
    throw error
   }
  }
@@ -97,7 +104,7 @@ test('hai người lưu đồng thời giữ đủ hai kết quả; chỉ duyệ
 test('khóa nhân viên ngăn truy cập; ADMIN không tự hạ quyền',async()=>{
  const admin=actor('admin'); await createTask(admin,'one')
  await assertFails(updateDoc(doc(admin,'users','admin'),{role:'employee',updatedAt:serverTimestamp()}))
- await assertSucceeds(updateDoc(doc(admin,'users','content'),{active:false,updatedAt:serverTimestamp()}))
+ await assertSucceeds(setAccess(admin,'content',false))
  await assertFails(getDoc(doc(actor('content'),'tasks','one')))
 })
 
@@ -262,4 +269,129 @@ test('deadline chọn ngày giờ không còn giới hạn 720 giờ và sửa t
  const legacy={...taskValue(),priority:'normal',durationHours:24}
  await assertSucceeds(createTask(admin,'legacy',legacy))
  await assertSucceeds(updateDoc(doc(admin,'tasks','legacy'),{title:'Nội dung mới',updatedAt:serverTimestamp()}))
+})
+
+async function renameSku(db,id,sku,manualNumber=0) {
+ return allocateSku(db,async(tx,counter)=>{
+  const sequence=await tx.get(counter),ref=doc(db,'tasks',id),before=await tx.get(ref)
+  if(before.data().sku===sku)return
+  const matches=await getDocsFromServer(query(collection(db,'tasks'),where('sku','==',sku)))
+  if(matches.docs.some(match=>match.id!==id))throw new Error('SKU_TRUNG')
+  tx.set(counter,{value:Math.max(sequence.data().value,manualNumber),taskId:id,manualSku:sku,manualNumber,updatedAt:serverTimestamp()})
+  tx.update(ref,{sku,updatedAt:serverTimestamp()})
+ })
+}
+
+test('chỉ ADMIN sửa SKU, giữ lịch sử và tiếp tục dãy sau khi xóa hoặc đổi mã',async()=>{
+ const admin=actor('admin');await createTask(admin,'one');await createTask(admin,'two')
+ const original=(await getDoc(doc(admin,'tasks','one'))).data()
+ for(const uid of ['manager','content'])await assertFails(renameSku(actor(uid),'one','vuatoi-video-01'))
+ await assertFails(updateDoc(doc(admin,'tasks','one'),{sku:'vuatoi-video-01',updatedAt:serverTimestamp()}))
+ await assertSucceeds(renameSku(admin,'one','vuatoi-video-01'))
+ const edited=(await getDoc(doc(admin,'tasks','one'))).data()
+ assert.equal(edited.sku,'vuatoi-video-01');assert.equal(edited.skuNumber,1)
+ for(const key of Object.keys(original).filter(key=>!['sku','updatedAt'].includes(key)))assert.deepEqual(edited[key],original[key])
+ await assert.rejects(renameSku(admin,'two','vuatoi-video-01'),/SKU_TRUNG/)
+ await assertSucceeds(deleteDoc(doc(admin,'tasks','two')))
+ await assertSucceeds(createTask(admin,'next'));assert.equal((await getDoc(doc(admin,'tasks','next'))).data().sku,'vuatoi.0003')
+ await assertSucceeds(renameSku(admin,'one','vuatoi.0100',100))
+ await assertSucceeds(createTask(admin,'after-future'));assert.equal((await getDoc(doc(admin,'tasks','after-future'))).data().sku,'vuatoi.0101')
+ await assertSucceeds(renameSku(admin,'one','vuatoi.0002',2))
+ await assertSucceeds(createTask(admin,'keep-increasing'));assert.equal((await getDoc(doc(admin,'tasks','keep-increasing'))).data().sku,'vuatoi.0102')
+})
+
+test('sửa SKU cả task đóng, chặn SKU sai định dạng và sửa bộ đếm / nội dung kèm theo',async()=>{
+ const admin=actor('admin');await createTask(admin,'one')
+ await env.withSecurityRulesDisabled(ctx=>updateDoc(doc(ctx.firestore(),'tasks','one'),{status:'cancelled'}))
+ await assertSucceeds(renameSku(admin,'one','cancelled-video'))
+ for(const [sku,number] of [['vuatoi.0008',0],['vuatoi.8',8],['VUATOI.0008',8],['invalid/sku',0],['x'.repeat(81),0]])await assertFails(renameSku(admin,'one',sku,number))
+ const counter=doc(admin,'counters','taskSku'),ref=doc(admin,'tasks','one')
+ await assertFails(setDoc(counter,{value:1,taskId:'one',manualSku:'counter-only',manualNumber:0,updatedAt:serverTimestamp()}))
+ const mixed=writeBatch(admin)
+ mixed.set(counter,{value:1,taskId:'one',manualSku:'mixed',manualNumber:0,updatedAt:serverTimestamp()})
+ mixed.update(ref,{sku:'mixed',title:'Unexpected edit',updatedAt:serverTimestamp()})
+ await assertFails(mixed.commit())
+ const lower=writeBatch(admin)
+ lower.set(counter,{value:0,taskId:'one',manualSku:'lower',manualNumber:0,updatedAt:serverTimestamp()})
+ lower.update(ref,{sku:'lower',updatedAt:serverTimestamp()})
+ await assertFails(lower.commit())
+ assert.equal((await getDoc(counter)).data().value,1)
+})
+
+test('hai lần đổi cùng SKU đồng thời chỉ thành công một lần, không làm trùng mã',async()=>{
+ const admin=actor('admin');await createTask(admin,'one');await createTask(admin,'two')
+ const result=await Promise.allSettled([renameSku(actor('admin'),'one','shared-code'),renameSku(actor('admin'),'two','shared-code')])
+ assert.equal(result.filter(r=>r.status==='fulfilled').length,1)
+ assert.equal(result.filter(r=>r.status==='rejected'&&r.reason.message==='SKU_TRUNG').length,1)
+ await assertSucceeds(copyBatch(admin,'copies-',10))
+ const records=(await getDocs(collection(admin,'tasks'))).docs.map(d=>d.data())
+ assert.equal(new Set(records.map(d=>d.sku)).size,12)
+ assert.equal((await getDoc(doc(admin,'counters','taskSku'))).data().value,12)
+})
+
+test('đổi SKU tương lai đồng thời tạo lô vẫn không trùng mã và không quay lại số đã xóa',async()=>{
+ const admin=actor('admin');await createTask(admin,'one')
+ await Promise.all([renameSku(actor('admin'),'one','vuatoi.0100',100),copyBatch(actor('admin'),'copies-',10)])
+ const records=(await getDocs(collection(admin,'tasks'))).docs.map(d=>d.data())
+ assert.equal(new Set(records.map(d=>d.sku)).size,11)
+ const high=(await getDoc(doc(admin,'counters','taskSku'))).data().value
+ assert.ok(high>=100)
+ await assertSucceeds(deleteDoc(doc(admin,'tasks','one')))
+ await assertSucceeds(createTask(admin,'next'))
+ assert.equal((await getDoc(doc(admin,'tasks','next'))).data().sku,skuFor(high+1))
+})
+
+test('quản lý thu hồi / cấp lại quyền nhân viên; giữ hồ sơ và kết quả cũ, chặn tự đăng ký lại',async()=>{
+ const admin=actor('admin'),manager=actor('manager'),employee=actor('content')
+ await createTask(admin,'one')
+ await updateDoc(doc(employee,'tasks','one'),{'contributions.content.note':'Kết quả trước khi thu hồi','contributions.content.status':'working',updatedAt:serverTimestamp()})
+ const before=(await getDoc(doc(admin,'tasks','one'))).data()
+ const ref=doc(manager,'users','content')
+ await assertFails(updateDoc(ref,{active:false,updatedAt:serverTimestamp()}))
+ await assertSucceeds(setAccess(manager,'content',false))
+ assert.deepEqual((await getDoc(doc(manager,'tasks','one'))).data(),before)
+ assert.equal((await getDoc(ref)).data().fullName,'content')
+ await assertFails(getDoc(doc(employee,'tasks','one')))
+ await assertFails(getDocs(query(collection(employee,'tasks'),where('assigneeUids','array-contains','content'))))
+ await assertFails(updateDoc(doc(employee,'tasks','one'),{'contributions.content.note':'Try bypass',updatedAt:serverTimestamp()}))
+ await assertFails(setDoc(doc(employee,'users','content'),{...profile('content'),createdAt:serverTimestamp(),updatedAt:serverTimestamp()}))
+ await assertFails(updateDoc(doc(employee,'users','content'),{active:true,updatedAt:serverTimestamp()}))
+ await assertFails(deleteDoc(ref));await assertFails(deleteDoc(doc(admin,'users','content')))
+ // New sign-in context with the same Google account remains revoked until explicitly restored.
+ await assertFails(getDoc(doc(actor('content'),'tasks','one')))
+ await assertSucceeds(setAccess(manager,'content',true))
+ await assertSucceeds(getDoc(doc(actor('content'),'tasks','one')))
+ await assertSucceeds(setAccess(admin,'content',false))
+ await assertSucceeds(setAccess(admin,'content',true))
+})
+
+test('quản lý không đổi vai trò, tên, khóa quản lý / ADMIN; nhân viên không cấp quyền cho nhau',async()=>{
+ const manager=actor('manager')
+ for(const uid of ['manager','admin'])await assertFails(updateDoc(doc(manager,'users',uid),{active:false,updatedAt:serverTimestamp()}))
+ for(const patch of [{role:'admin'},{role:'manager'},{fullName:'Changed name'},{email:'other@example.com'},{role:'manager',active:false}])await assertFails(updateDoc(doc(manager,'users','content'),{...patch,updatedAt:serverTimestamp()}))
+ for(const active of [false,true])await assertFails(updateDoc(doc(actor('media'),'users','content'),{active,updatedAt:serverTimestamp()}))
+ await assertSucceeds(updateDoc(doc(actor('admin'),'users','media'),{role:'manager',updatedAt:serverTimestamp()}))
+ await assertFails(updateDoc(doc(manager,'users','media'),{active:false,updatedAt:serverTimestamp()}))
+})
+
+test('email Google bị thu hồi không thể đăng ký lại bằng UID khác; chỉ quản lý cấp lại quyền',async()=>{
+ const admin=actor('admin'),manager=actor('manager')
+ await createTask(admin,'one');await setAccess(manager,'content',false)
+ const fresh=env.authenticatedContext('content-new',claims('content')).firestore()
+ const own={...profile('content-new'),email:'content@example.com',createdAt:serverTimestamp(),updatedAt:serverTimestamp()}
+ await assertSucceeds(getDoc(doc(fresh,'employeeAccess','content@example.com')))
+ await assertFails(getDoc(doc(actor('media'),'employeeAccess','content@example.com')))
+ await assertFails(setDoc(doc(fresh,'users','content-new'),own))
+ const restore={uid:'content',email:'content@example.com',active:true,updatedAt:serverTimestamp()}
+ await assertFails(setDoc(doc(fresh,'employeeAccess','content@example.com'),restore))
+ await assertFails(setDoc(doc(actor('media'),'employeeAccess','content@example.com'),restore))
+ await assertFails(setDoc(doc(manager,'employeeAccess','content@example.com'),restore))
+ await assertFails(deleteDoc(doc(admin,'employeeAccess','content@example.com')))
+ await env.withSecurityRulesDisabled(ctx=>setDoc(doc(ctx.firestore(),'users','content-new'),{...profile('content-new'),email:'content@example.com'}))
+ await assertFails(getDocs(collection(fresh,'tasks')))
+ await assertFails(updateDoc(doc(fresh,'users','content-new'),{active:true,updatedAt:serverTimestamp()}))
+ await env.withSecurityRulesDisabled(ctx=>deleteDoc(doc(ctx.firestore(),'users','content-new')))
+ await assertSucceeds(setAccess(manager,'content',true))
+ await assertSucceeds(setDoc(doc(fresh,'users','content-new'),own))
+ await assertSucceeds(getDoc(doc(actor('content'),'tasks','one')))
 })

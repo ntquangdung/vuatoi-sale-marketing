@@ -3,7 +3,11 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null && request.auth.token.firebase.sign_in_provider == 'google.com'; }
     function me() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
-    function active() { return signedIn() && me().active == true; }
+    function emailAllowed() {
+      return !exists(/databases/$(database)/documents/employeeAccess/$(request.auth.token.email.lower()))
+        || get(/databases/$(database)/documents/employeeAccess/$(request.auth.token.email.lower())).data.active == true;
+    }
+    function active() { return signedIn() && me().active == true && emailAllowed(); }
     function manager() { return active() && me().role in ['admin', 'manager']; }
     function admin() { return active() && me().role == 'admin'; }
     function text(v, max) { return v is string && v.size() <= max; }
@@ -48,6 +52,14 @@ service cloud.firestore {
       return !hasSku(resource.data)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['sku','skuNumber','updatedAt'])
         && request.resource.data.updatedAt == request.time && allocatedSku(request.resource.data,id);
+    }
+    function adminSkuEdit(id) {
+      let d = request.resource.data;
+      let counter = getAfter(/databases/$(database)/documents/counters/taskSku).data;
+      return admin() && hasSku(resource.data) && d.sku != resource.data.sku
+        && d.diff(resource.data).affectedKeys().hasOnly(['sku','updatedAt'])
+        && d.updatedAt == request.time && counter.updatedAt == request.time
+        && counter.taskId == id && counter.manualSku == d.sku;
     }
     function validContentInfo(c) {
       return c is map && c.keys().hasOnly(['pageName','videoType','contentLine','ageGroups','audience','campaign','thumbnailUrl','sourceUrl','sourceStatus'])
@@ -132,13 +144,21 @@ service cloud.firestore {
         && (d.status != 'needs_revision' || resource.data.status == 'needs_revision' || allSubmitted(resource.data));
     }
     match /users/{uid} {
+      function accessChange() {
+        let d = request.resource.data;
+        let access = getAfter(/databases/$(database)/documents/employeeAccess/$(d.email)).data;
+        return access.uid == uid && access.email == d.email && access.active == d.active && access.updatedAt == request.time;
+      }
       allow get: if signedIn() && request.auth.uid == uid || manager();
       allow list: if manager();
       allow create: if signedIn() && request.auth.uid == uid && request.auth.token.email_verified == true
         && validUser(request.resource.data,uid) && request.resource.data.email == request.auth.token.email.lower()
-        && request.resource.data.role == 'employee' && request.resource.data.active == true && request.resource.data.createdAt == request.time;
-      allow update: if admin() && validUser(request.resource.data,uid)
+        && emailAllowed() && request.resource.data.role == 'employee' && request.resource.data.active == true && request.resource.data.createdAt == request.time;
+      allow update: if (admin() || manager() && resource.data.role == 'employee'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active','updatedAt']))
+        && validUser(request.resource.data,uid)
         && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.email == resource.data.email
+        && (request.resource.data.active == resource.data.active || accessChange())
         && (request.auth.uid != uid || request.resource.data.active == true && request.resource.data.role == 'admin');
       allow delete: if false;
       match /deadlineReads/{taskId} {
@@ -151,6 +171,17 @@ service cloud.firestore {
         allow delete: if false;
       }
     }
+    match /employeeAccess/{email} {
+      allow get: if signedIn() && request.auth.token.email.lower() == email || manager();
+      allow create, update: if manager()
+        && request.resource.data.keys().hasOnly(['uid','email','active','updatedAt'])
+        && request.resource.data.email == email && request.resource.data.active is bool
+        && request.resource.data.updatedAt == request.time
+        && getAfter(/databases/$(database)/documents/users/$(request.resource.data.uid)).data.email == email
+        && getAfter(/databases/$(database)/documents/users/$(request.resource.data.uid)).data.active == request.resource.data.active
+        && (admin() || get(/databases/$(database)/documents/users/$(request.resource.data.uid)).data.role == 'employee');
+      allow delete: if false;
+    }
     match /tasks/{id} {
       allow read: if manager() || active() && request.auth.uid in resource.data.assigneeUids;
       allow create: if manager() && validTask(request.resource.data)
@@ -161,11 +192,24 @@ service cloud.firestore {
         && request.resource.data.createdByUid == request.auth.uid && request.resource.data.createdByName == me().fullName
         && request.resource.data.createdAt == request.time && request.resource.data.status == 'todo' && request.resource.data.submittedUids.size() == 0;
       allow update: if manager()
-        ? skuMigration(id) || (validSkuUpdate(request.resource.data,id) && managerUpdate() && validTask(request.resource.data) && validProductionUpdate(request.resource.data))
+        ? adminSkuEdit(id) || skuMigration(id) || (validSkuUpdate(request.resource.data,id) && managerUpdate() && validTask(request.resource.data) && validProductionUpdate(request.resource.data))
         : employeeReport() || employeePublication();
       allow delete: if admin();
     }
     match /counters/taskSku {
+      function manualRename() {
+        let d = request.resource.data;
+        let before = get(/databases/$(database)/documents/tasks/$(d.taskId)).data;
+        let after = getAfter(/databases/$(database)/documents/tasks/$(d.taskId)).data;
+        return admin() && d.keys().hasOnly(['value','taskId','updatedAt','manualSku','manualNumber'])
+          && d.manualSku is string && d.manualSku.size() <= 80 && d.manualSku.matches('^[a-z0-9][a-z0-9._-]*$')
+          && d.manualNumber is int && d.manualNumber >= 0 && d.manualNumber <= 999999999
+          && (d.manualNumber == 0 ? !d.manualSku.matches('^vuatoi[.][0-9]+$') : d.manualSku == skuFor(d.manualNumber))
+          && d.value is int && d.value == (d.manualNumber > resource.data.value ? d.manualNumber : resource.data.value)
+          && d.updatedAt == request.time && hasSku(before) && before.sku != after.sku
+          && after.sku == d.manualSku && after.updatedAt == request.time
+          && after.diff(before).affectedKeys().hasOnly(['sku','updatedAt']);
+      }
       function allocation() {
         let d = request.resource.data;
         let target = getAfter(/databases/$(database)/documents/tasks/$(d.taskId)).data;
@@ -180,7 +224,7 @@ service cloud.firestore {
       }
       allow get: if manager();
       allow create: if allocation() && request.resource.data.get('firstValue',request.resource.data.value) == 1;
-      allow update: if allocation() && request.resource.data.get('firstValue',request.resource.data.value) == resource.data.value + 1;
+      allow update: if manualRename() || allocation() && request.resource.data.get('firstValue',request.resource.data.value) == resource.data.value + 1;
       allow delete: if false;
     }
     match /{document=**} { allow read,write: if false; }
