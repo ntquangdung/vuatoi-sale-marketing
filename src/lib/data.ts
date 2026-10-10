@@ -17,6 +17,7 @@ export interface DataApi {
   watchContentTasks(user: UserProfile, next: (tasks: MarketingTask[]) => void, error: (error: Error) => void): () => void
   createTask(data: TaskInput): Promise<{ task: MarketingTask }>
   deleteTask(id: string): Promise<{ deletedId: string }>
+  deleteTasks(ids: string[]): Promise<{ deletedIds: string[] }>
   duplicateTask(id: string, count: number, deadlineAt: string): Promise<{ count: number; firstSku: string; lastSku: string; periodKey: string }>
   updateTask(id: string, data: TaskInput): Promise<{ task: MarketingTask }>
   renameTask(id: string, title: string): Promise<{ task: MarketingTask }>

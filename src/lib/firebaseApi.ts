@@ -1,5 +1,5 @@
 import { GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth'
-import { arrayRemove, arrayUnion, collection, deleteDoc, doc, FieldPath, getDoc, getDocs, onSnapshot, query, runTransaction, serverTimestamp, Timestamp, updateDoc, where, type DocumentData, type DocumentReference, type DocumentSnapshot, type Transaction } from 'firebase/firestore'
+import { arrayRemove, arrayUnion, collection, doc, FieldPath, getDoc, getDocs, onSnapshot, query, runTransaction, serverTimestamp, Timestamp, updateDoc, where, writeBatch, type DocumentData, type DocumentReference, type DocumentSnapshot, type Transaction } from 'firebase/firestore'
 import type { Assignment, ContentInfo, Contribution, MarketingTask, StageReview, TaskInput, UserProfile } from '../types'
 import { ApiError } from './api'
 import { firebaseAuth, firestore } from './firebase'
@@ -130,6 +130,18 @@ async function allocateSku(write: (tx: Transaction, counter: DocumentReference, 
     }
   }
 }
+async function deleteTaskBatch(ids: string[]) {
+  const actor = await currentUser()
+  if (actor.role !== 'admin') throw new ApiError('Chỉ ADMIN được xóa công việc.', 403)
+  const uniqueIds = [...new Set(ids)]
+  if (!uniqueIds.length || uniqueIds.length > 100 || uniqueIds.some(id => !id || id.includes('/'))) throw new Error('Chọn từ 1 đến 100 công việc để xóa.')
+  try {
+    const db = services().db, batch = writeBatch(db)
+    uniqueIds.forEach(id => batch.delete(doc(db, 'tasks', id)))
+    await batch.commit()
+    return { deletedIds: uniqueIds }
+  } catch (error) { message(error) }
+}
 export const firebaseApi: DataApi = {
   async loginGoogle() {
     const provider = new GoogleAuthProvider()
@@ -158,13 +170,10 @@ export const firebaseApi: DataApi = {
   },
   async task(id) { await currentUser(); return { task: await getTask(id) } },
   async deleteTask(id) {
-    const actor = await currentUser()
-    if (actor.role !== 'admin') throw new ApiError('Chỉ ADMIN được xóa công việc.', 403)
-    try {
-      await deleteDoc(doc(services().db, 'tasks', id))
-      return { deletedId: id }
-    } catch (error) { message(error) }
+    await deleteTaskBatch([id])
+    return { deletedId: id }
   },
+  deleteTasks: deleteTaskBatch,
   watchTask(id, next, error) {
     return onSnapshot(doc(services().db,'tasks',id), snapshot => {
       if (snapshot.exists()) next(task(snapshot))

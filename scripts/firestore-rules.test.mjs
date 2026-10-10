@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { before, after, beforeEach, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing'
-import { arrayUnion, collection, deleteDoc, doc, FieldPath, getDoc, getDocs, query, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore'
+import { arrayUnion, collection, deleteDoc, doc, FieldPath, getDoc, getDocs, query, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch } from 'firebase/firestore'
 let env
 const claims = uid => ({email:uid+'@example.com',email_verified:true,firebase:{sign_in_provider:'google.com'}})
 const actor = uid => env.authenticatedContext(uid,claims(uid)).firestore()
@@ -127,6 +127,35 @@ test('chỉ ADMIN đang hoạt động được xóa task; giữ nguyên bộ đ
   await assertSucceeds(deleteDoc(doc(admin,'tasks',status)))
   assert.equal((await getDoc(doc(admin,'tasks',status))).exists(),false)
  }
+})
+
+test('xóa nhiều task là một lần ghi nguyên tử; chặn quản lý và nhân viên, đủ 100 task cho ADMIN',async()=>{
+ const admin=actor('admin');await createTask(admin,'one');await createTask(admin,'two')
+ for(const uid of ['manager','content','extra0']) {
+  const db=actor(uid),batch=writeBatch(db)
+  batch.delete(doc(db,'tasks','one'));batch.delete(doc(db,'tasks','two'))
+  await assertFails(batch.commit())
+  assert.equal((await getDoc(doc(admin,'tasks','one'))).exists(),true)
+  assert.equal((await getDoc(doc(admin,'tasks','two'))).exists(),true)
+ }
+ const invalid=writeBatch(admin)
+ invalid.delete(doc(admin,'tasks','one'));invalid.delete(doc(admin,'users','content'))
+ await assertFails(invalid.commit())
+ assert.equal((await getDoc(doc(admin,'tasks','one'))).exists(),true)
+ await env.withSecurityRulesDisabled(async ctx=>{
+  const db=ctx.firestore(),batch=writeBatch(db)
+  for(let n=3;n<=100;n++) batch.set(doc(db,'tasks','bulk-'+n),{...taskValue(),sku:skuFor(n),skuNumber:n})
+  batch.set(doc(db,'counters','taskSku'),{value:100,taskId:'bulk-100',updatedAt:serverTimestamp()})
+  await batch.commit()
+ })
+ const counterBefore=(await getDoc(doc(admin,'counters','taskSku'))).data()
+ const batch=writeBatch(admin)
+ for(const id of ['one','two',...Array.from({length:98},(_,i)=>'bulk-'+(i+3))]) batch.delete(doc(admin,'tasks',id))
+ await assertSucceeds(batch.commit())
+ assert.equal((await getDocs(collection(admin,'tasks'))).size,0)
+ assert.deepEqual((await getDoc(doc(admin,'counters','taskSku'))).data(),counterBefore)
+ await assertSucceeds(createTask(admin,'next'))
+ assert.equal((await getDoc(doc(admin,'tasks','next'))).data().sku,'vuatoi.0101')
 })
 
 test('đã đọc lưu theo tài khoản, không sửa hoặc đọc thông báo người khác',async()=>{
