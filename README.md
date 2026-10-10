@@ -100,6 +100,16 @@ Giao diện không sử dụng API SQLite đời trước trong `server/`.
 
 ## GitHub / Vercel
 
+### Bản online
+
+- Website: [vuatoi-sale-marketing.vercel.app](https://vuatoi-sale-marketing.vercel.app).
+- GitHub: `ntquangdung` (`ntquangdung2001@gmail.com`), repo riêng tư `vuatoi-sale-marketing`, nhánh `main`.
+- Vercel: `dungbadao0704@gmail.com`, workspace `vuatoi-mkt`, project `vuatoi-sale-marketing`.
+- Firebase: `vuatoi-mkt`; domain `vuatoi-sale-marketing.vercel.app` đã nằm trong Authorized domains.
+- Vercel tự build khi đẩy thay đổi lên nhánh `main`. Các biến Firebase đã được cấu hình cho Production và Preview.
+
+### Triển khai lại
+
 1. Đưa source lên GitHub; không đưa `.env.local`, `.tools`, `.data`, `node_modules`, `dist` lên Git.
 2. Vercel import repository, preset **Vite**, build `npm run build`, output **dist**.
 3. Thêm các biến `VITE_FIREBASE_*` theo `.env.example`.
