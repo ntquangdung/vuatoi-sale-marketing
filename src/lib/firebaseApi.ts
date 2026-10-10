@@ -1,11 +1,12 @@
 import { GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth'
-import { arrayRemove, arrayUnion, collection, doc, FieldPath, getDoc, getDocs, onSnapshot, query, runTransaction, serverTimestamp, Timestamp, updateDoc, where, type DocumentData, type DocumentSnapshot } from 'firebase/firestore'
+import { arrayRemove, arrayUnion, collection, doc, FieldPath, getDoc, getDocs, onSnapshot, query, runTransaction, serverTimestamp, Timestamp, updateDoc, where, type DocumentData, type DocumentReference, type DocumentSnapshot, type Transaction } from 'firebase/firestore'
 import type { Assignment, ContentInfo, Contribution, MarketingTask, StageReview, TaskInput, UserProfile } from '../types'
 import { ApiError } from './api'
 import { firebaseAuth, firestore } from './firebase'
 import type { DataApi } from './data'
 import { emptyContribution, periodAt, taskStatus, validLink } from '../utils/tasks'
 import { ageOptions, emptyContentInfo, emptyReview, skuFor, stageMembers, stageSignature } from '../utils/content'
+import { copyTaskInput, validateCopyCount } from '../utils/duplicate'
 
 function services() {
   if (!firebaseAuth || !firestore) throw new Error('Chưa cấu hình Firebase. Kiểm tra .env.local.')
@@ -29,10 +30,11 @@ function task(snapshot: DocumentSnapshot<DocumentData>): MarketingTask {
   const v = snapshot.data()!
   const contributions = Object.fromEntries(Object.entries(v.contributions || {}).map(([uid, value]) => {
     const c = value as Contribution
-    return [uid, { ...c, submittedAt: c.submittedAt ? iso(c.submittedAt) : null }]
+    return [uid, { ...emptyContribution(), ...c, submittedAt: c.submittedAt ? iso(c.submittedAt) : null }]
   }))
   const review = (r?: StageReview) => ({ ...emptyReview(), ...r, reviewedAt: r?.reviewedAt ? iso(r.reviewedAt) : null })
-  return { ...v, id: snapshot.id, sku: v.sku || '', skuNumber: v.skuNumber ?? null, contentInfo: { ...emptyContentInfo(), ...v.contentInfo }, scriptReview: review(v.scriptReview), mediaReview: review(v.mediaReview), contributions, deadlineAt: iso(v.deadlineAt), createdAt: iso(v.createdAt), updatedAt: iso(v.updatedAt), completedAt: v.completedAt ? iso(v.completedAt) : null } as MarketingTask
+  const { thumbnailUrl: _removedThumbnail, ...contentInfo } = v.contentInfo || {}
+  return { ...v, id: snapshot.id, sku: v.sku || '', skuNumber: v.skuNumber ?? null, contentInfo: { ...emptyContentInfo(), ...contentInfo }, scriptReview: review(v.scriptReview), mediaReview: review(v.mediaReview), contributions, deadlineAt: iso(v.deadlineAt), createdAt: iso(v.createdAt), updatedAt: iso(v.updatedAt), completedAt: v.completedAt ? iso(v.completedAt) : null } as MarketingTask
 }
 async function currentUser(): Promise<UserProfile> {
   const { auth, db } = services()
@@ -70,7 +72,7 @@ async function getTask(id: string) {
 function validateTask(data: TaskInput) {
   if (!data.title.trim() || data.title.trim().length > 180) throw new Error('Tên công việc cần có từ 1 đến 180 ký tự.')
   if (data.description.length > 5000) throw new Error('Mô tả tối đa 5.000 ký tự.')
-  if (!Number.isFinite(data.durationHours) || data.durationHours < 0.25 || data.durationHours > 720) throw new Error('Deadline từ 0,25 đến 720 giờ.')
+  if (!data.deadlineAt || !Number.isFinite(Date.parse(data.deadlineAt))) throw new Error('Chọn ngày và giờ deadline hợp lệ.')
   if (!data.assignees.length || data.assignees.length > 8 || new Set(data.assignees.map(a => a.uid)).size !== data.assignees.length) throw new Error('Chọn từ 1 đến 8 nhân viên khác nhau.')
   if (!validLink(data.referenceUrl) || data.referenceUrl.length > 2000) throw new Error('Link tài liệu cần bắt đầu bằng https:// hoặc http://.')
   validateContentInfo(data.contentInfo)
@@ -78,7 +80,7 @@ function validateTask(data: TaskInput) {
 function validateContentInfo(info: ContentInfo) {
   for (const key of ['pageName','videoType','contentLine','audience','campaign'] as const) if (typeof info[key] !== 'string' || info[key].length > 180) throw new Error('Thông tin nội dung tối đa 180 ký tự mỗi trường.')
   if (!Array.isArray(info.ageGroups) || info.ageGroups.length > 6 || new Set(info.ageGroups).size !== info.ageGroups.length || info.ageGroups.some(age => !ageOptions.includes(age))) throw new Error('Nhóm tuổi không hợp lệ.')
-  if (![info.thumbnailUrl,info.sourceUrl].every(url => typeof url === 'string' && url.length <= 2000 && validLink(url))) throw new Error('Link thumbnail/source cần là http:// hoặc https:// hợp lệ.')
+  if (typeof info.sourceUrl !== 'string' || info.sourceUrl.length > 2000 || !validLink(info.sourceUrl)) throw new Error('Link source cần là http:// hoặc https:// hợp lệ.')
   if (!['not_started','shooting','recorded'].includes(info.sourceStatus)) throw new Error('Trạng thái source không hợp lệ.')
 }
 async function assignmentsFor(data: TaskInput): Promise<Record<string, Assignment>> {
@@ -90,13 +92,44 @@ async function assignmentsFor(data: TaskInput): Promise<Record<string, Assignmen
   }
   return result
 }
-const editableFields = (data: TaskInput, assignments: Record<string, Assignment>, deadlineAt: string) => ({
+const editableFields = (data: TaskInput, assignments: Record<string, Assignment>) => ({
   title: data.title.trim(), description: data.description.trim(), taskType: data.taskType,
   referenceUrl: data.referenceUrl.trim(), assigneeUids: data.assignees.map(a => a.uid), assignments,
-  priority: data.priority, durationHours: data.durationHours, deadlineAt: Timestamp.fromDate(new Date(deadlineAt)), periodKey: periodAt(deadlineAt),
-  requiresPublishing: data.requiresPublishing, plannedPublishDate: data.requiresPublishing ? data.plannedPublishDate : null,
+  deadlineAt: Timestamp.fromDate(new Date(data.deadlineAt)), periodKey: periodAt(data.deadlineAt),
+  requiresPublishing: data.requiresPublishing,
   contentInfo: Object.fromEntries(Object.entries(data.contentInfo).map(([key,value]) => [key,typeof value === 'string' ? value.trim() : value])),
 })
+function newTaskFields(data: TaskInput, assignments: Record<string, Assignment>, actor: UserProfile, skuNumber: number) {
+  return {
+    ...editableFields(data, assignments), sku: skuFor(skuNumber), skuNumber,
+    scriptReview: emptyReview(), mediaReview: emptyReview(),
+    contributions: Object.fromEntries(data.assignees.map(a => [a.uid, emptyContribution()])), submittedUids: [],
+    createdByUid: actor.uid, createdByName: actor.fullName, status: 'todo',
+    publicationStatus: data.requiresPublishing ? 'not_scheduled' : 'not_applicable', plannedPublishDate: null,
+    publishedDate: null, postUrl: null, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), completedAt: null,
+  }
+}
+async function allocateSku(write: (tx: Transaction, counter: DocumentReference, firstValue: number) => Promise<void>) {
+  const db = services().db, counter = doc(db, 'counters', 'taskSku')
+  for (let attempt = 0; ; attempt++) {
+    let previousValue: number | null = null
+    try {
+      await runTransaction(db, async tx => {
+        previousValue = (await tx.get(counter)).data()?.value || 0
+        await write(tx, counter, previousValue! + 1)
+      })
+      return
+    } catch (error) {
+      // Some Firestore evaluations reject a stale counter before the SDK reports a conflict.
+      // Retry only a failed atomic write whose counter actually advanced; stable refs avoid duplicates.
+      if (attempt < 3 && previousValue !== null && (error as {code?: string}).code === 'permission-denied') {
+        const current = (await getDoc(counter)).data()?.value || 0
+        if (current !== previousValue) continue
+      }
+      throw error
+    }
+  }
+}
 export const firebaseApi: DataApi = {
   async loginGoogle() {
     const provider = new GoogleAuthProvider()
@@ -143,21 +176,36 @@ export const firebaseApi: DataApi = {
     const actor = await requireManager(); validateTask(data)
     try {
       const assignments = await assignmentsFor(data)
-      const deadlineAt = new Date(Date.now() + data.durationHours * 3_600_000).toISOString()
-      const contributions = Object.fromEntries(data.assignees.map(a => [a.uid, emptyContribution()]))
+      if (Date.parse(data.deadlineAt) <= Date.now()) throw new Error('Deadline của công việc mới cần ở tương lai.')
       const ref = doc(collection(services().db, 'tasks'))
-      await runTransaction(services().db, async tx => {
-        const counter = doc(services().db,'counters','taskSku'), saved = await tx.get(counter)
-        const skuNumber = (saved.data()?.value || 0) + 1
+      await allocateSku(async (tx, counter, skuNumber) => {
         tx.set(counter,{value:skuNumber,taskId:ref.id,updatedAt:serverTimestamp()})
-        tx.set(ref, {
-        sku: skuFor(skuNumber), skuNumber, scriptReview: emptyReview(), mediaReview: emptyReview(),
-        ...editableFields(data, assignments, deadlineAt), contributions, submittedUids: [],
-        createdByUid: actor.uid, createdByName: actor.fullName, status: 'todo',
-        publicationStatus: data.requiresPublishing ? data.plannedPublishDate ? 'scheduled' : 'not_scheduled' : 'not_applicable',
-        publishedDate: null, postUrl: null, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), completedAt: null,
-      }) })
+        tx.set(ref, newTaskFields(data, assignments, actor, skuNumber))
+      })
       return { task: task(await getDoc(ref)) }
+    } catch (error) { message(error) }
+  },
+  async duplicateTask(id, count, deadlineAt) {
+    const actor = await requireManager(); validateCopyCount(count)
+    const db = services().db, refs = Array.from({ length: count }, () => doc(collection(db, 'tasks')))
+    let firstNumber = 0
+    try {
+      await allocateSku(async (tx, counter, firstValue) => {
+        const source = await tx.get(doc(db, 'tasks', id))
+        if (!source.exists()) throw new Error('Không tìm thấy công việc mẫu.')
+        const before = task(source), input = copyTaskInput(before, deadlineAt)
+        validateTask(input)
+        if (Date.parse(deadlineAt) <= Date.now()) throw new Error('Chọn deadline tương lai cho các bản mới.')
+        // All profile reads precede writes; retrying the transaction cannot produce partial copies.
+        for (const uid of before.assigneeUids) {
+          const member = await tx.get(doc(db, 'users', uid))
+          if (!member.exists() || !member.data().active || member.data().role !== 'employee') throw new Error('Task mẫu có nhân viên ngừng hoạt động. Cập nhật người được giao trước khi sao chép.')
+        }
+        tx.set(counter, { value: firstValue + count - 1, firstValue, taskIds: refs.map(ref => ref.id), taskId: refs[count - 1].id, updatedAt: serverTimestamp() })
+        refs.forEach((ref, index) => tx.set(ref, newTaskFields(input, before.assignments, actor, firstValue + index)))
+        firstNumber = firstValue
+      })
+      return { count, firstSku: skuFor(firstNumber), lastSku: skuFor(firstNumber + count - 1), periodKey: periodAt(deadlineAt) }
     } catch (error) { message(error) }
   },
   async updateTask(id, data) {
@@ -170,22 +218,36 @@ export const firebaseApi: DataApi = {
         if (!snapshot.exists()) throw new Error('Không tìm thấy công việc.')
         const before = task(snapshot)
         if (['done', 'cancelled'].includes(before.status)) throw new Error('Không thể sửa công việc đã hoàn thành hoặc hủy.')
-        const deadlineAt = new Date(Date.parse(before.createdAt) + data.durationHours * 3_600_000).toISOString()
+        if (Date.parse(data.deadlineAt) <= Date.parse(before.createdAt)) throw new Error('Deadline phải sau thời điểm tạo công việc.')
         const contributions = Object.fromEntries(data.assignees.map(a => [a.uid, before.assignments[a.uid]?.workRole === a.workRole ? snapshot.data().contributions[a.uid] : { ...(snapshot.data().contributions[a.uid] || emptyContribution()), status: 'pending', submittedAt: null }]))
         tx.update(ref, {
-          ...editableFields(data, assignments, deadlineAt), contributions,
+          ...editableFields(data, assignments), contributions,
           submittedUids: before.submittedUids.filter(uid => data.assignees.some(a => a.uid === uid && a.workRole === before.assignments[uid].workRole)),
-          publicationStatus: !data.requiresPublishing ? 'not_applicable' : before.publicationStatus === 'published' ? 'published' : data.plannedPublishDate ? 'scheduled' : 'not_scheduled',
+          publicationStatus: !data.requiresPublishing ? 'not_applicable' : before.publicationStatus === 'not_applicable' ? 'not_scheduled' : before.publicationStatus,
+          plannedPublishDate: data.requiresPublishing ? before.plannedPublishDate : null,
           publishedDate: data.requiresPublishing ? before.publishedDate : null, postUrl: data.requiresPublishing ? before.postUrl : null, updatedAt: serverTimestamp(),
         })
       })
       return { task: await getTask(id) }
     } catch (error) { message(error) }
   },
+  async renameTask(id, title) {
+    await requireManager()
+    if (!title.trim() || title.trim().length > 180) throw new Error('Tiêu đề cần có từ 1 đến 180 ký tự.')
+    try {
+      const ref = doc(services().db, 'tasks', id)
+      await runTransaction(services().db, async tx => {
+        const snapshot = await tx.get(ref)
+        if (!snapshot.exists() || ['done', 'cancelled'].includes(snapshot.data().status)) throw new Error('Không thể sửa công việc đã đóng.')
+        tx.update(ref, { title: title.trim(), updatedAt: serverTimestamp() })
+      })
+      return { task: await getTask(id) }
+    } catch (error) { message(error) }
+  },
   async report(id, data) {
     const actor = await currentUser()
-    if (![data.scriptUrl, data.mediaUrl].every(validLink)) throw new Error('Link cần bắt đầu bằng https:// hoặc http://.')
-    if (data.title.length > 180 || data.note.length > 5000 || data.scriptUrl.length > 2000 || data.mediaUrl.length > 2000) throw new Error('Nội dung vượt giới hạn ký tự.')
+    if (![data.scriptUrl, data.sourceUrl, data.mediaUrl].every(validLink)) throw new Error('Link cần bắt đầu bằng https:// hoặc http://.')
+    if (data.title.length > 180 || data.note.length > 5000 || data.scriptUrl.length > 2000 || data.sourceUrl.length > 2000 || data.mediaUrl.length > 2000) throw new Error('Nội dung vượt giới hạn ký tự.')
     const ref = doc(services().db, 'tasks', id)
     try {
       const before = await getTask(id)
@@ -193,10 +255,10 @@ export const firebaseApi: DataApi = {
       if (['done', 'cancelled'].includes(before.status)) throw new Error('Công việc đã đóng.')
       if (!data.submit && before.contributions[actor.uid].status === 'submitted') throw new Error('Phần việc đã nộp. Dùng Nộp lại kết quả để cập nhật.')
       const role = before.assignments[actor.uid].workRole
-      if (data.submit && (role === 'content' ? !data.title.trim() || !data.scriptUrl : role === 'media' ? !data.mediaUrl : !data.note.trim() && !data.scriptUrl && !data.mediaUrl)) throw new Error(role === 'content' ? 'Thêm tiêu đề và link kịch bản trước khi nộp.' : role === 'media' ? 'Thêm link media đã edit trước khi nộp.' : 'Thêm kết quả trước khi nộp.')
+      if (data.submit && (role === 'content' ? !data.title.trim() || !data.scriptUrl : role === 'media' ? !data.mediaUrl : !data.note.trim() && !data.scriptUrl && !data.sourceUrl && !data.mediaUrl)) throw new Error(role === 'content' ? 'Thêm tiêu đề và link kịch bản trước khi nộp.' : role === 'media' ? 'Thêm link media đã edit trước khi nộp.' : 'Thêm kết quả trước khi nộp.')
       // Only this member's map entry changes; atomic set operations preserve concurrent submissions.
       await updateDoc(ref, new FieldPath('contributions',actor.uid), {
-        title:data.title.trim(),scriptUrl:data.scriptUrl.trim(),mediaUrl:data.mediaUrl.trim(),note:data.note.trim(),
+        title:data.title.trim(),scriptUrl:data.scriptUrl.trim(),sourceUrl:data.sourceUrl.trim(),mediaUrl:data.mediaUrl.trim(),note:data.note.trim(),
         status:data.submit ? 'submitted' : 'working',submittedAt:data.submit ? serverTimestamp() : null,
       }, 'submittedUids', data.submit ? arrayUnion(actor.uid) : arrayRemove(actor.uid), 'updatedAt',serverTimestamp())
       return { task: await getTask(id) }
@@ -205,11 +267,9 @@ export const firebaseApi: DataApi = {
   async ensureSkus(ids) {
     await requireManager()
     try {
-      for (const id of ids) await runTransaction(services().db, async tx => {
+      for (const id of ids) await allocateSku(async (tx, counter, skuNumber) => {
         const ref = doc(services().db,'tasks',id), snapshot = await tx.get(ref)
         if (!snapshot.exists() || snapshot.data().sku) return
-        const counter = doc(services().db,'counters','taskSku'), saved = await tx.get(counter)
-        const skuNumber = (saved.data()?.value || 0) + 1
         tx.set(counter,{value:skuNumber,taskId:id,updatedAt:serverTimestamp()})
         tx.update(ref,{sku:skuFor(skuNumber),skuNumber,updatedAt:serverTimestamp()})
       })
@@ -273,14 +333,16 @@ export const firebaseApi: DataApi = {
     } catch (error) { message(error) }
   },
   async publish(id, data) {
-    await requireManager()
+    const actor = await currentUser()
     try {
       const ref = doc(services().db,'tasks',id)
       await runTransaction(services().db,async tx => {
         const snapshot = await tx.get(ref)
         if (!snapshot.exists()) throw new Error('Không tìm thấy công việc.')
         const before = task(snapshot), required = data.requiresPublishing ?? before.requiresPublishing
+        if (actor.role === 'employee' && (!before.assigneeUids.includes(actor.uid) || required !== before.requiresPublishing)) throw new ApiError('Bạn chỉ được cập nhật lịch đăng của công việc được giao.', 403)
         if (before.status === 'cancelled') throw new Error('Công việc đã hủy.')
+        if (required && !['scheduled', 'published'].includes(data.publicationStatus)) throw new Error('Chọn Đã lên lịch hoặc Đã đăng.')
         if (required && data.publicationStatus === 'published' && (!data.publishedDate || !data.postUrl || !validLink(data.postUrl) || data.postUrl.length > 2000)) throw new Error('Nhập ngày đăng và link bài đăng hợp lệ.')
         if (!required && data.requiresPublishing === undefined) throw new Error('Công việc không có lịch đăng.')
         const planned = data.plannedPublishDate === undefined ? before.plannedPublishDate : data.plannedPublishDate

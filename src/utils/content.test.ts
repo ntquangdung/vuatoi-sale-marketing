@@ -7,7 +7,7 @@ function task(): MarketingTask {
   return { id:'task',sku:'vuatoi.0001',skuNumber:1,title:'Video',description:'',taskType:'video',referenceUrl:'',contentInfo:emptyContentInfo(),scriptReview:emptyReview(),mediaReview:emptyReview(),
     assigneeUids:['content','media'],submittedUids:['content'],assignments:{content:{fullName:'Content',workRole:'content'},media:{fullName:'Media',workRole:'media'}},
     contributions:{content:{...emptyContribution(),title:'Tỏi Lý Sơn',scriptUrl:'https://example.com/script',status:'submitted',submittedAt:'2026-10-10T01:00:00.000Z'},media:emptyContribution()},
-    createdByUid:'admin',createdByName:'Admin',status:'todo',priority:'normal',deadlineAt:'2026-10-10T05:00:00Z',durationHours:24,periodKey:'2026-10',requiresPublishing:false,publicationStatus:'not_applicable',plannedPublishDate:null,publishedDate:null,postUrl:null,createdAt:'2026-10-09T05:00:00Z',updatedAt:'',completedAt:null }
+    createdByUid:'admin',createdByName:'Admin',status:'todo',deadlineAt:'2026-10-10T05:00:00Z',periodKey:'2026-10',requiresPublishing:false,publicationStatus:'not_applicable',plannedPublishDate:null,publishedDate:null,postUrl:null,createdAt:'2026-10-09T05:00:00Z',updatedAt:'',completedAt:null }
 }
 function approve(t: MarketingTask, stage:'script'|'media') { t[stage==='script'?'scriptReview':'mediaReview']={status:'approved',byUid:'admin',byName:'Admin',signature:stageSignature(t,stage),reviewedAt:'2026-10-10T02:00:00.000Z'} }
 describe('SKU và duyệt theo từng phần việc',()=>{

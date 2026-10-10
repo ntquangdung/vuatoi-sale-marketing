@@ -1,5 +1,5 @@
 import type { Contribution, MarketingTask, TaskStatus } from '../types'
-export const emptyContribution = (): Contribution => ({ title: '', scriptUrl: '', mediaUrl: '', note: '', status: 'pending', submittedAt: null })
+export const emptyContribution = (): Contribution => ({ title: '', scriptUrl: '', sourceUrl: '', mediaUrl: '', note: '', status: 'pending', submittedAt: null })
 export function taskStatus(task: MarketingTask): TaskStatus {
   if (['done', 'cancelled'].includes(task.status)) return task.status
   if (task.assigneeUids.length && task.assigneeUids.every(uid => task.contributions[uid]?.status === 'submitted')) return 'waiting_review'

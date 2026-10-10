@@ -19,14 +19,14 @@ service cloud.firestore {
     }
     function validContribution(c, a) {
       return c is map && c.keys().hasAll(['title','scriptUrl','mediaUrl','note','status','submittedAt'])
-        && c.keys().hasOnly(['title','scriptUrl','mediaUrl','note','status','submittedAt'])
-        && text(c.title,180) && link(c.scriptUrl) && link(c.mediaUrl) && text(c.note,5000)
+        && c.keys().hasOnly(['title','scriptUrl','sourceUrl','mediaUrl','note','status','submittedAt'])
+        && text(c.title,180) && link(c.scriptUrl) && link(c.get('sourceUrl','')) && link(c.mediaUrl) && text(c.note,5000)
         && c.status in ['pending','working','submitted']
         && ((c.status != 'submitted' && c.submittedAt == null)
           || (c.status == 'submitted' && c.submittedAt is timestamp
             && (a.workRole == 'content' ? c.title.size() > 0 && c.scriptUrl.size() > 0
               : a.workRole == 'media' ? c.mediaUrl.size() > 0
-              : c.note.size() > 0 || c.scriptUrl.size() > 0 || c.mediaUrl.size() > 0)));
+              : c.note.size() > 0 || c.scriptUrl.size() > 0 || c.get('sourceUrl','').size() > 0 || c.mediaUrl.size() > 0)));
     }
     function allSubmitted(d) { return d.submittedUids.toSet() == d.assigneeUids.toSet(); }
     function skuFor(n) { return 'vuatoi.' + (n < 10 ? '000' : n < 100 ? '00' : n < 1000 ? '0' : '') + string(n); }
@@ -34,8 +34,11 @@ service cloud.firestore {
     function allocatedSku(d, id) {
       let counter = getAfter(/databases/$(database)/documents/counters/taskSku).data;
       return d.skuNumber is int && d.skuNumber >= 1 && d.skuNumber <= 999999999
-        && d.sku == skuFor(d.skuNumber) && counter.value == d.skuNumber
-        && counter.taskId == id && counter.updatedAt == request.time;
+        && d.sku == skuFor(d.skuNumber) && counter.updatedAt == request.time
+        && ('taskIds' in counter
+          ? d.skuNumber >= counter.firstValue && d.skuNumber <= counter.value
+            && counter.taskIds[d.skuNumber - counter.firstValue] == id
+          : counter.value == d.skuNumber && counter.taskId == id);
     }
     function validSkuUpdate(d, id) {
       return hasSku(resource.data) ? d.sku == resource.data.sku && d.skuNumber == resource.data.skuNumber
@@ -51,7 +54,7 @@ service cloud.firestore {
         && text(c.pageName,180) && text(c.videoType,180) && text(c.contentLine,180)
         && c.ageGroups is list && c.ageGroups.size() <= 6 && c.ageGroups.toSet().size() == c.ageGroups.size()
         && c.ageGroups.toSet().hasOnly(['Dưới 18','18–24','25–34','35–44','45–54','55+'])
-        && text(c.audience,180) && text(c.campaign,180) && link(c.thumbnailUrl) && link(c.sourceUrl)
+        && text(c.audience,180) && text(c.campaign,180) && link(c.get('thumbnailUrl','')) && link(c.sourceUrl)
         && c.sourceStatus in ['not_started','shooting','recorded'];
     }
     function validReview(r) {
@@ -80,7 +83,7 @@ service cloud.firestore {
     function validTask(d) {
       return d.keys().hasOnly(['title','description','taskType','referenceUrl','assigneeUids','submittedUids','assignments','contributions','createdByUid','createdByName','status','priority','deadlineAt','durationHours','periodKey','requiresPublishing','publicationStatus','plannedPublishDate','publishedDate','postUrl','createdAt','updatedAt','completedAt','sku','skuNumber','contentInfo','scriptReview','mediaReview'])
         && text(d.title,180) && d.title.size() > 0 && text(d.description,5000) && link(d.referenceUrl)
-        && d.taskType in ['video','content','seo','design','other'] && d.priority in ['low','normal','high','urgent']
+        && d.taskType in ['video','content','seo','design','other']
         && d.assigneeUids is list && d.assigneeUids.size() >= 1 && d.assigneeUids.size() <= 8
         && d.assigneeUids.toSet().size() == d.assigneeUids.size()
         && d.submittedUids is list && d.submittedUids.toSet().size() == d.submittedUids.size()
@@ -89,7 +92,6 @@ service cloud.firestore {
         && d.assignments.keys().toSet() == d.assigneeUids.toSet() && d.contributions.keys().toSet() == d.assigneeUids.toSet()
         && text(d.createdByUid,128) && text(d.createdByName,120)
         && d.status in ['todo','in_progress','needs_revision','waiting_review','done','cancelled']
-        && d.durationHours is number && d.durationHours >= 0.25 && d.durationHours <= 720
         && d.deadlineAt is timestamp && d.createdAt is timestamp && d.deadlineAt > d.createdAt
         && d.periodKey is string && d.periodKey.matches('^[0-9]{4}-[0-9]{2}$')
         && d.updatedAt == request.time && publication(d)
@@ -112,6 +114,13 @@ service cloud.firestore {
         && d.submittedUids is list && d.submittedUids.toSet().size() == d.submittedUids.size()
         && d.submittedUids.toSet() == (c.status == 'submitted' ? submitted.union([uid].toSet()) : submitted)
         && (c.status == 'submitted' ? c.submittedAt == request.time : c.submittedAt == null);
+    }
+    function employeePublication() {
+      let d = request.resource.data;
+      return active() && request.auth.uid in resource.data.assigneeUids
+        && resource.data.status != 'cancelled' && resource.data.requiresPublishing
+        && d.diff(resource.data).affectedKeys().hasOnly(['plannedPublishDate','publicationStatus','publishedDate','postUrl','updatedAt'])
+        && d.publicationStatus in ['scheduled','published'] && publication(d) && d.updatedAt == request.time;
     }
     function managerUpdate() {
       let d = request.resource.data;
@@ -153,21 +162,25 @@ service cloud.firestore {
         && request.resource.data.createdAt == request.time && request.resource.data.status == 'todo' && request.resource.data.submittedUids.size() == 0;
       allow update: if manager()
         ? skuMigration(id) || (validSkuUpdate(request.resource.data,id) && managerUpdate() && validTask(request.resource.data) && validProductionUpdate(request.resource.data))
-        : employeeReport();
+        : employeeReport() || employeePublication();
       allow delete: if false;
     }
     match /counters/taskSku {
       function allocation() {
         let d = request.resource.data;
         let target = getAfter(/databases/$(database)/documents/tasks/$(d.taskId)).data;
-        return manager() && d.keys().hasOnly(['value','taskId','updatedAt']) && d.value is int && d.value >= 1 && d.value <= 999999999
+        let ids = d.get('taskIds',[d.taskId]);
+        let first = d.get('firstValue',d.value);
+        return manager() && d.keys().hasOnly(['value','taskId','updatedAt','firstValue','taskIds']) && d.value is int && d.value >= 1 && d.value <= 999999999
+          && first is int && first >= 1 && ids is list && ids.size() >= 1 && ids.size() <= 50 && ids.toSet().size() == ids.size()
+          && d.value == first + ids.size() - 1 && d.taskId == ids[ids.size() - 1]
           && text(d.taskId,128) && d.taskId != '' && d.updatedAt == request.time
           && target.skuNumber == d.value && target.sku == skuFor(d.value)
           && (!exists(/databases/$(database)/documents/tasks/$(d.taskId)) || !hasSku(get(/databases/$(database)/documents/tasks/$(d.taskId)).data));
       }
       allow get: if manager();
-      allow create: if allocation() && request.resource.data.value == 1;
-      allow update: if allocation() && request.resource.data.value == resource.data.value + 1;
+      allow create: if allocation() && request.resource.data.get('firstValue',request.resource.data.value) == 1;
+      allow update: if allocation() && request.resource.data.get('firstValue',request.resource.data.value) == resource.data.value + 1;
       allow delete: if false;
     }
     match /{document=**} { allow read,write: if false; }

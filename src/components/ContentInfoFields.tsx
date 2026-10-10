@@ -10,9 +10,7 @@ export function ContentInfoFields({ value, change }: { value: ContentInfo; chang
       <label>Tuyến nội dung<input maxLength={180} value={value.contentLine} onChange={e => field('contentLine',e.target.value)} placeholder="Ví dụ: Tỏi Lý Sơn / Kiến thức" /></label>
       <label>Đối tượng<input maxLength={180} value={value.audience} onChange={e => field('audience',e.target.value)} placeholder="Khách hàng mục tiêu" /></label>
       <label>Chiến dịch / Sản phẩm<input maxLength={180} value={value.campaign} onChange={e => field('campaign',e.target.value)} placeholder="Ví dụ: Tỏi cô đơn Lý Sơn" /></label>
-      <label>Link thumbnail<input type="url" maxLength={2000} value={value.thumbnailUrl} onChange={e => field('thumbnailUrl',e.target.value)} placeholder="https://drive.google.com/…" /></label>
       <label>Trạng thái source<select value={value.sourceStatus} onChange={e => field('sourceStatus',e.target.value as SourceStatus)}>{Object.entries(sourceLabels).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-      <label>Link source / footage<input type="url" maxLength={2000} value={value.sourceUrl} onChange={e => field('sourceUrl',e.target.value)} placeholder="https://drive.google.com/…" /></label>
     </div>
     <fieldset className="age-picker"><legend>Độ tuổi mục tiêu</legend>{ageOptions.map(age => <label key={age}><input type="checkbox" checked={value.ageGroups.includes(age)} onChange={e => field('ageGroups',e.target.checked ? [...value.ageGroups,age] : value.ageGroups.filter(v => v !== age))} /><span>{age}</span></label>)}</fieldset>
   </>

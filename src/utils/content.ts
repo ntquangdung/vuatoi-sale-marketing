@@ -3,7 +3,7 @@ import type { ContentInfo, MarketingTask, ReviewStage, StageReview } from '../ty
 export const ageOptions = ['Dưới 18', '18–24', '25–34', '35–44', '45–54', '55+']
 export const sourceLabels = { not_started: 'Chưa quay', shooting: 'Đang quay', recorded: 'Đã quay' }
 export const reviewLabels = { not_applicable: 'Không áp dụng', not_submitted: 'Chưa nộp', pending: 'Chờ duyệt', approved: 'Đã duyệt', needs_revision: 'Cần sửa' }
-export const emptyContentInfo = (): ContentInfo => ({ pageName: '', videoType: '', contentLine: '', ageGroups: [], audience: '', campaign: '', thumbnailUrl: '', sourceUrl: '', sourceStatus: 'not_started' })
+export const emptyContentInfo = (): ContentInfo => ({ pageName: '', videoType: '', contentLine: '', ageGroups: [], audience: '', campaign: '', sourceUrl: '', sourceStatus: 'not_started' })
 export const emptyReview = (): StageReview => ({ status: 'pending', byUid: '', byName: '', signature: '', reviewedAt: null })
 export function skuFor(number: number) {
   if (!Number.isSafeInteger(number) || number < 1) throw new Error('Số SKU không hợp lệ.')

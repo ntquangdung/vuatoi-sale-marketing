@@ -7,22 +7,32 @@ let env
 const claims = uid => ({email:uid+'@example.com',email_verified:true,firebase:{sign_in_provider:'google.com'}})
 const actor = uid => env.authenticatedContext(uid,claims(uid)).firestore()
 const profile = (uid,role='employee') => ({uid,fullName:uid,email:uid+'@example.com',role,active:true,createdAt:Timestamp.now(),updatedAt:Timestamp.now()})
-const empty = () => ({title:'',scriptUrl:'',mediaUrl:'',note:'',status:'pending',submittedAt:null})
+const empty = () => ({title:'',scriptUrl:'',sourceUrl:'',mediaUrl:'',note:'',status:'pending',submittedAt:null})
 const contentInfo = () => ({pageName:'Vua Tỏi',videoType:'Giáo dục',contentLine:'Tuyến 1',ageGroups:['25–34'],audience:'Khách hàng',campaign:'',thumbnailUrl:'',sourceUrl:'',sourceStatus:'not_started'})
 const emptyReview = () => ({status:'pending',byUid:'',byName:'',signature:'',reviewedAt:null})
 const skuFor = n => 'vuatoi.'+String(n).padStart(4,'0')
 async function createTask(db,id,value=taskValue()) {
- return runTransaction(db,async tx=>{
-  const counter=doc(db,'counters','taskSku'),before=await tx.get(counter),skuNumber=(before.data()?.value||0)+1
+ return allocateSku(db,async (tx,counter,skuNumber)=>{
   tx.set(counter,{value:skuNumber,taskId:id,updatedAt:serverTimestamp()})
   tx.set(doc(db,'tasks',id),{...value,sku:skuFor(skuNumber),skuNumber})
  })
 }
+async function allocateSku(db,write) {
+ const counter=doc(db,'counters','taskSku')
+ for(let attempt=0;;attempt++) {
+  let previous=null
+  try { return await runTransaction(db,async tx=>{previous=(await tx.get(counter)).data()?.value||0;return write(tx,counter,previous+1)}) }
+  catch(error) {
+   if(attempt<3&&previous!==null&&error.code==='permission-denied'&&((await getDoc(counter)).data()?.value||0)!==previous) continue
+   throw error
+  }
+ }
+}
 function taskValue(uids=['content','media']) {
  return {title:'Video Vua Tỏi',description:'',taskType:'video',referenceUrl:'https://example.com/brief',contentInfo:contentInfo(),scriptReview:emptyReview(),mediaReview:emptyReview(),assigneeUids:uids,submittedUids:[],
  assignments:Object.fromEntries(uids.map(uid=>[uid,{fullName:uid,workRole:uid==='media'?'media':'content'}])),
- contributions:Object.fromEntries(uids.map(uid=>[uid,empty()])),createdByUid:'admin',createdByName:'admin',status:'todo',priority:'normal',
- deadlineAt:Timestamp.fromMillis(Date.now()+86400000),durationHours:24,periodKey:'2026-10',requiresPublishing:false,
+ contributions:Object.fromEntries(uids.map(uid=>[uid,empty()])),createdByUid:'admin',createdByName:'admin',status:'todo',
+ deadlineAt:Timestamp.fromMillis(Date.now()+86400000),periodKey:'2026-10',requiresPublishing:false,
  publicationStatus:'not_applicable',plannedPublishDate:null,publishedDate:null,postUrl:null,createdAt:serverTimestamp(),updatedAt:serverTimestamp(),completedAt:null}
 }
 before(async()=>{ env=await initializeTestEnvironment({projectId:'demo-marketing-vua-toi',firestore:{host:'127.0.0.1',port:8080,rules:await readFile('firestore.rules','utf8')}}) })
@@ -139,4 +149,60 @@ test('chỉ quản lý sửa thông tin bảng và duyệt, chặn link script �
  await assertSucceeds(updateDoc(doc(manager,'tasks','one'),{scriptReview:review,updatedAt:serverTimestamp()}))
  await assertFails(updateDoc(doc(actor('content'),'tasks','one'),{scriptReview:review,updatedAt:serverTimestamp()}))
  await assertFails(updateDoc(doc(admin,'tasks','one'),{mediaReview:review,updatedAt:serverTimestamp()}))
+})
+
+async function copyBatch(db, prefix, count, corrupt=false) {
+ return allocateSku(db,async (tx,counter,firstValue)=>{
+  const taskIds=Array.from({length:count},(_,i)=>prefix+i)
+  tx.set(counter,{value:firstValue+count-1,firstValue,taskIds,taskId:taskIds[count-1],updatedAt:serverTimestamp()})
+  taskIds.forEach((id,i)=>tx.set(doc(db,'tasks',id),{...taskValue(),sku:skuFor(firstValue+i),skuNumber:corrupt&&i===0?99999:firstValue+i}))
+ })
+}
+test('tạo đồng thời lô 10 bản và task đơn vẫn có SKU riêng; đủ 50 bản trong một giao dịch',async()=>{
+ const admin=actor('admin');await createTask(admin,'original')
+ const original=(await getDoc(doc(admin,'tasks','original'))).data()
+ await Promise.all([copyBatch(admin,'copy-',10),createTask(admin,'single')])
+ const records=(await getDocs(collection(admin,'tasks'))).docs.map(d=>d.data())
+ assert.equal(records.length,12);assert.equal(new Set(records.map(d=>d.sku)).size,12)
+ assert.deepEqual(records.map(d=>d.skuNumber).sort((a,b)=>a-b),Array.from({length:12},(_,i)=>i+1))
+ assert.deepEqual((await getDoc(doc(admin,'tasks','original'))).data(),original)
+ for(const d of records) {assert.deepEqual(d.assigneeUids,original.assigneeUids);assert.deepEqual(d.assignments,original.assignments)}
+ await assertSucceeds(copyBatch(admin,'large-',50))
+ assert.equal((await getDocs(collection(admin,'tasks'))).size,62)
+})
+test('lô lỗi không tạo dở dang, không đổi bộ đếm; nhân viên không tự nhân bản',async()=>{
+ const admin=actor('admin');await createTask(admin,'original')
+ await assertFails(copyBatch(admin,'bad-',10,true))
+ assert.equal((await getDocs(collection(admin,'tasks'))).size,1)
+ assert.equal((await getDoc(doc(admin,'counters','taskSku'))).data().value,1)
+ await assertFails(copyBatch(actor('content'),'employee-',10))
+ await assertFails(copyBatch(admin,'too-many-',51))
+})
+test('nhân viên tự điền source của mình, không sửa source người khác và chặn URL độc hại',async()=>{
+ const admin=actor('admin');await createTask(admin,'one')
+ const ref=doc(actor('media'),'tasks','one')
+ await assertSucceeds(updateDoc(ref,{'contributions.media.sourceUrl':'https://example.com/footage','contributions.media.status':'working',updatedAt:serverTimestamp()}))
+ await assertFails(updateDoc(ref,{'contributions.content.sourceUrl':'https://example.com/other',updatedAt:serverTimestamp()}))
+ await assertFails(updateDoc(ref,{'contributions.media.sourceUrl':'javascript:alert(1)',updatedAt:serverTimestamp()}))
+ await assertSucceeds(updateDoc(doc(admin,'tasks','one'),{'assignments.media.workRole':'other',updatedAt:serverTimestamp()}))
+ await assertSucceeds(updateDoc(ref,{'contributions.media.status':'submitted','contributions.media.submittedAt':serverTimestamp(),submittedUids:['media'],updatedAt:serverTimestamp()}))
+})
+test('người được giao tự lên lịch và đánh dấu đã đăng; không được sửa deadline hay lịch task khác',async()=>{
+ const admin=actor('admin'),content=actor('content'),value={...taskValue(),requiresPublishing:true,publicationStatus:'not_scheduled'}
+ await createTask(admin,'one',value);const ref=doc(content,'tasks','one')
+ await assertFails(updateDoc(ref,{publicationStatus:'scheduled',updatedAt:serverTimestamp()}))
+ await assertSucceeds(updateDoc(ref,{publicationStatus:'scheduled',plannedPublishDate:'2026-10-20',updatedAt:serverTimestamp()}))
+ await assertFails(updateDoc(doc(actor('extra0'),'tasks','one'),{plannedPublishDate:'2026-10-21',updatedAt:serverTimestamp()}))
+ await assertFails(updateDoc(ref,{plannedPublishDate:'2026-10-21',deadlineAt:Timestamp.fromMillis(Date.now()+200000000),updatedAt:serverTimestamp()}))
+ await assertFails(updateDoc(ref,{publicationStatus:'published',publishedDate:'2026-10-20',postUrl:'javascript:alert(1)',updatedAt:serverTimestamp()}))
+ await assertSucceeds(updateDoc(ref,{publicationStatus:'published',publishedDate:'2026-10-20',postUrl:'https://example.com/post',updatedAt:serverTimestamp()}))
+ await assertSucceeds(updateDoc(doc(admin,'tasks','one'),{status:'cancelled',updatedAt:serverTimestamp()}))
+ await assertFails(updateDoc(ref,{publishedDate:'2026-10-21',updatedAt:serverTimestamp()}))
+})
+test('deadline chọn ngày giờ không còn giới hạn 720 giờ và sửa task cũ vẫn tương thích',async()=>{
+ const admin=actor('admin'),value=taskValue();value.deadlineAt=Timestamp.fromMillis(Date.now()+180*86400000)
+ await assertSucceeds(createTask(admin,'long',value))
+ const legacy={...taskValue(),priority:'normal',durationHours:24}
+ await assertSucceeds(createTask(admin,'legacy',legacy))
+ await assertSucceeds(updateDoc(doc(admin,'tasks','legacy'),{title:'Nội dung mới',updatedAt:serverTimestamp()}))
 })

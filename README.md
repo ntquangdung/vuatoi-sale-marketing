@@ -31,15 +31,15 @@ Không đưa service account hoặc thông tin đăng nhập vào frontend/Git.
 
 ## Công việc nhiều người
 
-1. Tạo task với tên, yêu cầu, link tài liệu và deadline **0,25–720 giờ**.
+1. Tạo task với tên, yêu cầu, link tài liệu và **ngày giờ deadline tự chọn** (giờ Việt Nam).
 2. Giao **1–8 nhân viên**, chọn phần việc Content, Media hoặc Khác.
-3. Content nộp **tiêu đề + link kịch bản**; Media nộp **link media đã edit**.
+3. Content nộp **tiêu đề + link kịch bản**; Media nộp **link media đã edit**. Nhân viên tự điền link source của mình.
 4. Mỗi người lưu nháp và nộp riêng; nộp đủ thì task hiển thị **Chờ duyệt**.
 5. ADMIN/Quản lý duyệt hoàn thành, yêu cầu chỉnh sửa hoặc hủy.
 6. Kết quả cũ giữ lại khi yêu cầu chỉnh sửa. Người đã nộp có thể nộp lại kết quả.
-7. Task cần đăng bài/video có ngày dự kiến, trạng thái đăng và link bài đã đăng.
+7. Task cần đăng bài/video: người được giao tự chọn **Đã lên lịch** và ngày đăng, hoặc **Đã đăng** kèm ngày và link bài/video. ADMIN/quản lý vẫn được cập nhật.
 
-Không có phần trăm hoàn thành. Link mở ở tab mới; không upload video/file lên Firebase Storage.
+Không có ưu tiên, link thumbnail hoặc phần trăm hoàn thành. Font Noto Sans hỗ trợ tiếng Việt được đóng gói cùng ứng dụng. Link mở ở tab mới; không upload video/file lên Firebase Storage.
 Các phần việc cập nhật nguyên tử, hai người lưu đồng thời không ghi đè kết quả của nhau.
 
 ## Bảng nội dung cho ADMIN / quản lý
@@ -56,9 +56,10 @@ Mục **Bảng nội dung** dùng chung dữ liệu với Công việc. Mỗi d�
 - SKU tự tăng `vuatoi.0001`, `vuatoi.0002`… bằng transaction Firestore. Hai người tạo cùng lúc không trùng mã.
 - Task cũ được cấp mã một lần khi quản lý mở bảng; giữ nguyên người giao, deadline và kết quả đã nộp.
 - Các cột gồm Page, Content, loại video, tuyến nội dung, độ tuổi, đối tượng, chiến dịch / sản phẩm,
-  tiêu đề / thumbnail, kịch bản, duyệt kịch bản, source / link source, Media / link edit,
+  tiêu đề nội dung, link kịch bản, duyệt kịch bản, source / link source, Media / link edit,
   người kiểm duyệt media, duyệt media, đăng Page / ngày đăng / link bài, deadline và trạng thái task.
-- Nhấp ô để sửa thông tin; nhấp SKU hoặc tiêu đề để mở task. Kịch bản / link edit lấy từ phần việc nhân viên đã nộp.
+- Nhấp ô để sửa thông tin hoặc tiêu đề; nhấp SKU để mở task. Link kịch bản / source / media lấy từ phần việc nhân viên tự cập nhật.
+- Nút **Sao chép SKU** dưới bảng: chọn task mẫu, số bản mới (1–50, mặc định 10) và deadline. Giữ nội dung, phân loại, người được giao và vai trò; mỗi bản nhận SKU riêng. Kết quả, duyệt và lịch đăng bắt đầu lại. Một giao dịch tạo cả lô; nếu bị từ chối thì không tạo dở dang.
 - Duyệt kịch bản và media riêng; yêu cầu sửa chỉ mở lại phần việc tương ứng. Nếu nhân viên đổi kết quả hoặc nộp lại,
   phần đó trở về chờ duyệt. Duyệt hoàn thành task duyệt cả các phần việc đã nộp đủ.
 - Tìm SKU / Page / tiêu đề / nhân viên, lọc Page / loại video / trạng thái duyệt hoặc đăng bài,
@@ -68,7 +69,7 @@ Mục **Bảng nội dung** dùng chung dữ liệu với Công việc. Mỗi d�
 
 ## Deadline và thông báo trong tài khoản
 
-Deadline tính từ lúc tạo; sửa số giờ vẫn tính từ thời điểm tạo ban đầu. Giao diện dùng giờ Việt Nam.
+Deadline do quản lý chọn trực tiếp ngày và giờ, không giới hạn số giờ từ lúc tạo. Giao diện dùng giờ Việt Nam (GMT+7), dữ liệu lưu timestamp UTC.
 Thời điểm nộp đủ kết quả dùng để đánh giá đúng hạn, tránh tính nhân viên trễ vì quản lý duyệt sau đó.
 
 - Cảnh báo tại **chuông** khi còn tối đa 30 phút hoặc đã trễ.

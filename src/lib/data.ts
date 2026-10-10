@@ -2,7 +2,7 @@ import type { ContentInfo, Contribution, MarketingTask, TaskInput, UserProfile, 
 import { firebaseApi } from './firebaseApi'
 export { ApiError } from './api'
 export { firebaseConfigError } from './firebase'
-export type ReportInput = Pick<Contribution, 'title' | 'scriptUrl' | 'mediaUrl' | 'note'> & { submit: boolean }
+export type ReportInput = Pick<Contribution, 'title' | 'scriptUrl' | 'sourceUrl' | 'mediaUrl' | 'note'> & { submit: boolean }
 export interface PublicationInput { publicationStatus: PublicationStatus; publishedDate: string | null; postUrl: string | null; requiresPublishing?: boolean; plannedPublishDate?: string | null }
 export interface DataApi {
   loginGoogle(): Promise<{ user: UserProfile }>
@@ -16,7 +16,9 @@ export interface DataApi {
   watchTasks(user: UserProfile, period: string | null, next: (tasks: MarketingTask[]) => void, error: (error: Error) => void): () => void
   watchContentTasks(user: UserProfile, next: (tasks: MarketingTask[]) => void, error: (error: Error) => void): () => void
   createTask(data: TaskInput): Promise<{ task: MarketingTask }>
+  duplicateTask(id: string, count: number, deadlineAt: string): Promise<{ count: number; firstSku: string; lastSku: string; periodKey: string }>
   updateTask(id: string, data: TaskInput): Promise<{ task: MarketingTask }>
+  renameTask(id: string, title: string): Promise<{ task: MarketingTask }>
   ensureSkus(ids: string[]): Promise<void>
   updateContentInfo(id: string, changes: Partial<ContentInfo>): Promise<{ task: MarketingTask }>
   reviewStage(id: string, stage: ReviewStage, status: 'approved' | 'needs_revision'): Promise<{ task: MarketingTask }>
