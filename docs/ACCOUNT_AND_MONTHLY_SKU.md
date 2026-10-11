@@ -27,11 +27,11 @@
 
 ## Backend trên Vercel
 
-`api/admin.mjs` cấp/đổi tài khoản; `api/board.mjs` xử lý SKU và sửa toàn bộ dòng. Mọi API kiểm tra Firebase ID token, trạng thái hồ sơ và vai trò từ Firestore.
+`api/admin.mjs` cấp/đổi tài khoản; `api/board.mjs` xử lý SKU và sửa toàn bộ dòng. Hai API này kiểm tra Firebase ID token, trạng thái hồ sơ và vai trò từ Firestore. `GET /api/status` chỉ trả trạng thái kết nối và sẵn sàng, không trả dữ liệu nhân sự/công việc.
 
 Kết nối Google Cloud bằng Vercel OIDC + Workload Identity Federation, không đưa khóa dịch vụ hoặc credential cá nhân lên GitHub/Vercel.
 
-Cấu hình dự kiến (cần chủ project phê duyệt trước khi áp dụng):
+Cấu hình production đã được chủ project phê duyệt:
 
 - Firebase project `vuatoi-mkt` / số `327588256790`.
 - Service account `vuatoi-accounts@vuatoi-mkt.iam.gserviceaccount.com`.
