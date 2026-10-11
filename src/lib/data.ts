@@ -15,6 +15,7 @@ export interface DataApi {
   users(): Promise<{ users: UserProfile[] }>
   updateUser(uid: string, data: Pick<UserProfile, 'fullName' | 'role' | 'active' | 'position'>): Promise<{ user: UserProfile }>
   setEmployeeAccess(uid: string, active: boolean): Promise<{ user: UserProfile }>
+  setUsersArchived(uids: string[], archived: boolean): Promise<{ uids: string[] }>
   tasks(period: string): Promise<{ tasks: MarketingTask[] }>
   task(id: string): Promise<{ task: MarketingTask }>
   watchTask(id: string, next: (task: MarketingTask | null) => void, error: (error: Error) => void): () => void

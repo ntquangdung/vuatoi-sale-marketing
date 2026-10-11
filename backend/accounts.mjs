@@ -14,7 +14,7 @@ export async function authorize(auth, db, token, migration = false, allowManager
   try { decoded = await auth.verifyIdToken(token, true) } catch { throw new HttpError(401, 'Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.') }
   const profile = await db.doc(`users/${decoded.uid}`).get()
   const user = profile.data()
-  if (!user?.active || !(allowManager ? ['admin','manager'].includes(user.role) : user.role === 'admin')) throw new HttpError(403, 'Bạn không có quyền thực hiện thao tác này.')
+  if (!user?.active || user.archived || !(allowManager ? ['admin','manager'].includes(user.role) : user.role === 'admin')) throw new HttpError(403, 'Bạn không có quyền thực hiện thao tác này.')
   const block = await db.doc(`employeeAccess/${user.email}`).get()
   if (block.exists && !block.data().active) throw new HttpError(403, 'Tài khoản đã bị thu hồi quyền.')
   if (decoded.firebase?.sign_in_provider !== 'password' && !(migration && !user.username && decoded.firebase?.sign_in_provider === 'google.com')) throw new HttpError(403, 'Thiết lập tài khoản mật khẩu trước khi quản lý nhân sự.')
@@ -27,6 +27,7 @@ export async function manageAccount({ auth, db }, actor, input) {
   if (uid) {
     before = (await db.doc(`users/${uid}`).get()).data()
     if (!before) throw new HttpError(404, 'Không tìm thấy nhân sự.')
+    if (before.archived) throw new HttpError(409, 'Khôi phục nhân sự từ mục Đã xóa trước khi sửa tài khoản.')
   }
   let data
   try { data = validateAccount(input, !before?.username) } catch (e) { throw new HttpError(400, e.message) }

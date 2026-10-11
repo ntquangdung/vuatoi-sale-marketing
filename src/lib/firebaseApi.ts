@@ -22,7 +22,7 @@ function message(error: unknown): never {
 const iso = (value: unknown): string => value && typeof (value as Timestamp).toDate === 'function' ? (value as Timestamp).toDate().toISOString() : typeof value === 'string' ? value : ''
 function profile(snapshot: DocumentSnapshot<DocumentData>): UserProfile {
   const v = snapshot.data()!
-  return { username:v.username, position:v.position, contactEmail:v.contactEmail, uid: snapshot.id, fullName: v.fullName, email: v.email, role: v.role, active: v.active, createdAt: iso(v.createdAt), updatedAt: iso(v.updatedAt) }
+  return { username:v.username, position:v.position, contactEmail:v.contactEmail, uid: snapshot.id, fullName: v.fullName, email: v.email, role: v.role, active: v.active, archived: v.archived === true, createdAt: iso(v.createdAt), updatedAt: iso(v.updatedAt) }
 }
 function task(snapshot: DocumentSnapshot<DocumentData>): MarketingTask {
   const v = snapshot.data()!
@@ -43,7 +43,7 @@ async function currentUser(): Promise<UserProfile> {
     const snapshot = await getDoc(doc(db,'users',identity.uid))
     if (!snapshot.exists()) throw new ApiError('Tài khoản chưa được ADMIN cấp quyền.',403)
     const user=profile(snapshot)
-    if (!user.active || !['admin','manager','employee'].includes(user.role)) throw new ApiError('Tài khoản đã bị thu hồi quyền. Liên hệ ADMIN hoặc quản lý.',403)
+    if (!user.active || user.archived || !['admin','manager','employee'].includes(user.role)) throw new ApiError('Tài khoản đã bị thu hồi quyền. Liên hệ ADMIN hoặc quản lý.',403)
     const token=await identity.getIdTokenResult()
     if(token.signInProvider!=='password' && !(user.role==='admin'&&!user.username)) throw new ApiError('Vui lòng dùng tài khoản và mật khẩu do ADMIN cấp.',403)
     const access=await getDoc(doc(db,'employeeAccess',user.email))
@@ -124,6 +124,7 @@ export const firebaseApi: DataApi = {
       await runTransaction(db, async tx => {
         const before = await tx.get(ref)
         if (!before.exists()) throw new Error('Không tìm thấy nhân sự.')
+        if (before.data().archived) throw new Error('Khôi phục nhân sự từ mục Đã xóa trước khi sửa hồ sơ.')
         const position=data.position || positionForProfile({role:data.role,position:before.data().position})
         if(roleForPosition(position)!==data.role) throw new Error('Vị trí không khớp với quyền truy cập.')
         tx.update(ref, { fullName: data.fullName.trim(), role: data.role, position, active: data.active, updatedAt: serverTimestamp() })
@@ -139,11 +140,33 @@ export const firebaseApi: DataApi = {
       await runTransaction(db, async tx => {
         const snapshot = await tx.get(ref)
         if (!snapshot.exists() || snapshot.data().role !== 'employee') throw new Error('Chức năng này chỉ áp dụng cho tài khoản nhân viên.')
+        if (snapshot.data().archived) throw new Error('Khôi phục nhân sự từ mục Đã xóa trước khi cấp lại quyền.')
         // Retain the identity and assignment snapshots when access is revoked.
         tx.update(ref, { active, updatedAt: serverTimestamp() })
         tx.set(doc(db, 'employeeAccess', snapshot.data().email), { uid, email: snapshot.data().email, active, updatedAt: serverTimestamp() })
       })
       return { user: profile(await getDoc(ref)) }
+    } catch (error) { message(error) }
+  },
+  async setUsersArchived(uids, archived) {
+    const actor = await requireManager(), unique = [...new Set(uids)]
+    if (!unique.length || unique.length > 8 || unique.some(uid => !uid || uid.includes('/'))) throw new Error('Chọn từ 1 đến 8 nhân sự mỗi lần.')
+    if (unique.includes(actor.uid)) throw new Error('Không thể xóa tài khoản đang đăng nhập.')
+    try {
+      const db = services().db
+      await runTransaction(db, async tx => {
+        const snapshots = await Promise.all(unique.map(uid => tx.get(doc(db, 'users', uid))))
+        for (const snapshot of snapshots) {
+          if (!snapshot.exists()) throw new Error('Không tìm thấy nhân sự. Tải lại danh sách và thử lại.')
+          if (actor.role !== 'admin' && snapshot.data().role !== 'employee') throw new ApiError('Quản lý chỉ được xóa hoặc khôi phục nhân viên.', 403)
+        }
+        for (const snapshot of snapshots) {
+          const user = snapshot.data()!
+          tx.update(snapshot.ref, { archived, active: false, updatedAt: serverTimestamp() })
+          tx.set(doc(db, 'employeeAccess', user.email), { uid: snapshot.id, email: user.email, active: false, updatedAt: serverTimestamp() })
+        }
+      })
+      return { uids: unique }
     } catch (error) { message(error) }
   },
   async tasks(period) {

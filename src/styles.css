@@ -187,6 +187,7 @@ body{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-r
 .directory-tabs button[aria-pressed=true] span{background:#dceaff;color:#1765db}
 .directory-toolbar .search-box{width:260px;max-width:100%;height:35px}
 .directory-action-heading{text-align:right}
+.directory-select{width:42px;text-align:center;padding-left:12px;padding-right:8px}.directory-select input{width:15px;height:15px;accent-color:#1765db;vertical-align:middle}.directory-archive-list{display:grid;gap:9px;max-height:310px;overflow:auto}
 .directory-row-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;white-space:nowrap}
 .button.access-revoke{color:#a75a32;background:#fff5ee;border:1px solid #f3ddcd;box-shadow:none}
 .button.access-revoke:hover{background:#ffeada}

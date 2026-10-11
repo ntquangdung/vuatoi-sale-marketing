@@ -7,7 +7,7 @@ service cloud.firestore {
       return !exists(/databases/$(database)/documents/employeeAccess/$(request.auth.token.email.lower()))
         || get(/databases/$(database)/documents/employeeAccess/$(request.auth.token.email.lower())).data.active == true;
     }
-    function active() { return signedIn() && me().active == true && emailAllowed(); }
+    function active() { return signedIn() && me().active == true && me().get('archived',false) == false && emailAllowed(); }
     function manager() { return active() && me().role in ['admin', 'manager']; }
     function admin() { return active() && me().role == 'admin'; }
     function text(v, max) { return v is string && v.size() <= max; }
@@ -15,7 +15,8 @@ service cloud.firestore {
     function date(v) { return v is string && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
     function validUser(d, uid) {
       return d.keys().hasAll(['uid', 'fullName', 'email', 'role', 'active', 'createdAt', 'updatedAt'])
-        && d.keys().hasOnly(['uid', 'fullName', 'email', 'role', 'active', 'createdAt', 'updatedAt','username','position','contactEmail'])
+        && d.keys().hasOnly(['uid', 'fullName', 'email', 'role', 'active', 'createdAt', 'updatedAt','username','position','contactEmail','archived'])
+        && (!('archived' in d) || d.archived is bool && (!d.archived || !d.active))
         && (!('username' in d) || d.username is string && d.username.matches('^[a-z0-9][a-z0-9._-]{2,39}$'))
         && (!('position' in d) || d.position in ['content','media','manager','admin'])
         && (!('contactEmail' in d) || text(d.contactEmail,254))
@@ -127,7 +128,7 @@ service cloud.firestore {
       allow list: if manager();
       allow create: if false; // Accounts and profiles are provisioned only through the ADMIN API.
       allow update: if (admin() || manager() && resource.data.role == 'employee'
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active','updatedAt']))
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active','archived','updatedAt']))
         && validUser(request.resource.data,uid)
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['username','contactEmail'])
         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['position','role'])
@@ -135,6 +136,8 @@ service cloud.firestore {
           || request.resource.data.get('position','') == request.resource.data.role && request.resource.data.role in ['admin','manager'])
         && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.email == resource.data.email
         && (request.resource.data.active == resource.data.active || accessChange())
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['archived'])
+          || request.auth.uid != uid && request.resource.data.active == false && accessChange())
         && (request.auth.uid != uid || request.resource.data.active == true && request.resource.data.role == 'admin');
       allow delete: if false;
       match /deadlineReads/{taskId} {

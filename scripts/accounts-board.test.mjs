@@ -27,6 +27,15 @@ async function access(uid,active,who='manager') {
  const c=client(who),batch=writeBatch(c),p=(await db.doc('users/'+uid).get()).data()
  batch.update(doc(c,'users',uid),{active,updatedAt:serverTimestamp()});batch.set(doc(c,'employeeAccess',p.email),{uid,email:p.email,active,updatedAt:serverTimestamp()});await batch.commit()
 }
+async function archiveStaff(uids,archived=true,who='admin') {
+ const c=client(who),batch=writeBatch(c)
+ for(const uid of uids) {
+  const p=(await db.doc('users/'+uid).get()).data()
+  batch.update(doc(c,'users',uid),{archived,active:false,updatedAt:serverTimestamp()})
+  batch.set(doc(c,'employeeAccess',p.email),{uid,email:p.email,active:false,updatedAt:serverTimestamp()})
+ }
+ await batch.commit()
+}
 before(async()=>{
  if(!process.env.FIRESTORE_EMULATOR_HOST||!process.env.FIREBASE_AUTH_EMULATOR_HOST)throw new Error('Tests must run on emulators only.')
  app=initializeApp({projectId:'demo-marketing-vua-toi'},'account-tests');auth=getAuth(app);db=getFirestore(app)
@@ -132,6 +141,54 @@ test('revocation keeps historical names, immediately denies access and manager c
  await access('content',true);await assertSucceeds(getDoc(doc(client('content'),'tasks',id)))
  await assertFails(deleteDoc(doc(client('admin'),'users','content')))
 })
+test('bulk staff removal keeps the signed-in ADMIN and historical task data',async()=>{
+ const {id}=await create(),before=await row(id)
+ await db.doc('users/admin.other').set(profile({...actor,uid:'admin.other',email:loginEmail('admin.other')}))
+ await archiveStaff(['content','media','manager','admin.other'])
+ for(const uid of ['content','media','manager','admin.other']) {
+  const u=(await db.doc('users/'+uid).get()).data();assert.equal(u.archived,true);assert.equal(u.active,false)
+  await assertFails(getDoc(doc(client(uid),'tasks',id)))
+ }
+ assert.deepEqual(await row(id),before)
+ assert.equal((await db.doc('users/admin').get()).data().active,true)
+ await assertFails(archiveStaff(['admin']))
+ await assertSucceeds(getDocs(collection(client('admin'),'users')))
+})
+
+test('eight-profile removal fits Firestore atomic access-rule limits',async()=>{
+ const uids=['content','media','manager']
+ for(let index=0;index<5;index++) {
+  const uid='staff'+index;uids.push(uid)
+  await db.doc('users/'+uid).set(profile({...employee,uid,email:loginEmail(uid)}))
+ }
+ await assertSucceeds(archiveStaff(uids))
+ assert.equal((await db.collection('users').where('archived','==',true).get()).size,8)
+})
+
+test('restoring a deleted profile keeps it blocked until access is explicitly granted',async()=>{
+ const {id}=await create()
+ await archiveStaff(['content'],true,'manager')
+ await assertFails(access('content',true))
+ await archiveStaff(['content'],false,'manager')
+ assert.equal((await db.doc('users/content').get()).data().active,false)
+ await assertFails(getDoc(doc(client('content'),'tasks',id)))
+ await access('content',true)
+ await assertSucceeds(getDoc(doc(client('content'),'tasks',id)))
+})
+
+test('manager cannot delete managers or ADMINs; employees cannot delete staff',async()=>{
+ await assertFails(archiveStaff(['admin'],true,'manager'))
+ await assertFails(archiveStaff(['manager'],true,'manager'))
+ await assertFails(archiveStaff(['media'],true,'content'))
+ await assertFails(updateDoc(doc(client('admin'),'users','content'),{archived:true,updatedAt:serverTimestamp()}))
+})
+
+test('deleted staff cannot be provisioned again until the profile is restored',async()=>{
+ await archiveStaff(['content'])
+ await assert.rejects(manageAccount({auth,db},actor,account({action:'update',uid:'content',username:'content',password:''})),e=>e.status===409)
+ assert.equal((await db.doc('users/content').get()).data().archived,true)
+})
+
 test('manager cannot revoke another manager, change role, salary, username or position',async()=>{
  const c=client('manager');await assertFails(updateDoc(doc(c,'users','admin'),{active:false,updatedAt:serverTimestamp()}));await assertFails(updateDoc(doc(c,'users','content'),{role:'admin',updatedAt:serverTimestamp()}));await assertFails(updateDoc(doc(client('admin'),'users','content'),{username:'other',updatedAt:serverTimestamp()}));await assertFails(updateDoc(doc(c,'users','content'),{position:'media',updatedAt:serverTimestamp()}))
 })
