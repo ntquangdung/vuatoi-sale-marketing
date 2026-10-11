@@ -1,7 +1,7 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() { return request.auth != null && request.auth.token.firebase.sign_in_provider == 'google.com'; }
+    function signedIn() { return request.auth != null && request.auth.token.firebase.sign_in_provider == 'password'; }
     function me() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
     function emailAllowed() {
       return !exists(/databases/$(database)/documents/employeeAccess/$(request.auth.token.email.lower()))
@@ -15,7 +15,10 @@ service cloud.firestore {
     function date(v) { return v is string && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
     function validUser(d, uid) {
       return d.keys().hasAll(['uid', 'fullName', 'email', 'role', 'active', 'createdAt', 'updatedAt'])
-        && d.keys().hasOnly(['uid', 'fullName', 'email', 'role', 'active', 'createdAt', 'updatedAt'])
+        && d.keys().hasOnly(['uid', 'fullName', 'email', 'role', 'active', 'createdAt', 'updatedAt','username','position','contactEmail'])
+        && (!('username' in d) || d.username is string && d.username.matches('^[a-z0-9][a-z0-9._-]{2,39}$'))
+        && (!('position' in d) || d.position in ['content','media'])
+        && (!('contactEmail' in d) || text(d.contactEmail,254))
         && d.uid == uid && text(d.fullName,120) && d.fullName.size() > 0
         && text(d.email,254) && d.email.matches('^[^ @]+@[^ @]+[.][^ @]+$')
         && d.role in ['admin','manager','employee'] && d.active is bool
@@ -33,34 +36,6 @@ service cloud.firestore {
               : c.note.size() > 0 || c.scriptUrl.size() > 0 || c.get('sourceUrl','').size() > 0 || c.mediaUrl.size() > 0)));
     }
     function allSubmitted(d) { return d.submittedUids.toSet() == d.assigneeUids.toSet(); }
-    function skuFor(n) { return 'vuatoi.' + (n < 10 ? '000' : n < 100 ? '00' : n < 1000 ? '0' : '') + string(n); }
-    function hasSku(d) { return 'sku' in d && d.sku != ''; }
-    function allocatedSku(d, id) {
-      let counter = getAfter(/databases/$(database)/documents/counters/taskSku).data;
-      return d.skuNumber is int && d.skuNumber >= 1 && d.skuNumber <= 999999999
-        && d.sku == skuFor(d.skuNumber) && counter.updatedAt == request.time
-        && ('taskIds' in counter
-          ? d.skuNumber >= counter.firstValue && d.skuNumber <= counter.value
-            && counter.taskIds[d.skuNumber - counter.firstValue] == id
-          : counter.value == d.skuNumber && counter.taskId == id);
-    }
-    function validSkuUpdate(d, id) {
-      return hasSku(resource.data) ? d.sku == resource.data.sku && d.skuNumber == resource.data.skuNumber
-        : !hasSku(d) || allocatedSku(d, id);
-    }
-    function skuMigration(id) {
-      return !hasSku(resource.data)
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['sku','skuNumber','updatedAt'])
-        && request.resource.data.updatedAt == request.time && allocatedSku(request.resource.data,id);
-    }
-    function adminSkuEdit(id) {
-      let d = request.resource.data;
-      let counter = getAfter(/databases/$(database)/documents/counters/taskSku).data;
-      return admin() && hasSku(resource.data) && d.sku != resource.data.sku
-        && d.diff(resource.data).affectedKeys().hasOnly(['sku','updatedAt'])
-        && d.updatedAt == request.time && counter.updatedAt == request.time
-        && counter.taskId == id && counter.manualSku == d.sku;
-    }
     function validContentInfo(c) {
       return c is map && c.keys().hasOnly(['pageName','videoType','contentLine','ageGroups','audience','campaign','thumbnailUrl','sourceUrl','sourceStatus'])
         && text(c.pageName,180) && text(c.videoType,180) && text(c.contentLine,180)
@@ -70,7 +45,7 @@ service cloud.firestore {
         && c.sourceStatus in ['not_started','shooting','recorded'];
     }
     function validReview(r) {
-      return r is map && r.keys().hasOnly(['status','byUid','byName','signature','reviewedAt'])
+      return r is map && r.keys().hasOnly(['status','byUid','byName','signature','reviewedAt','manual'])
         && r.status in ['pending','approved','needs_revision'] && text(r.byUid,128) && text(r.byName,120) && text(r.signature,50000)
         && (r.reviewedAt == null ? r.status == 'pending' && r.byUid == '' && r.byName == '' && r.signature == ''
           : r.reviewedAt is timestamp && r.byUid != '' && r.byName != '');
@@ -135,13 +110,11 @@ service cloud.firestore {
         && d.publicationStatus in ['scheduled','published'] && publication(d) && d.updatedAt == request.time;
     }
     function managerUpdate() {
-      let d = request.resource.data;
+      let d=request.resource.data;
       return d.createdAt == resource.data.createdAt && d.createdByUid == resource.data.createdByUid && d.createdByName == resource.data.createdByName
-        && validReviewChange(d,'scriptReview') && validReviewChange(d,'mediaReview')
-        && (resource.data.status == 'done' ? d.diff(resource.data).affectedKeys().hasOnly(['requiresPublishing','plannedPublishDate','publicationStatus','publishedDate','postUrl','contentInfo','sku','skuNumber','updatedAt'])
-          : resource.data.status != 'cancelled' || (!hasSku(resource.data) && d.diff(resource.data).affectedKeys().hasOnly(['sku','skuNumber','updatedAt'])))
-        && (d.status != 'done' || resource.data.status == 'done' || (allSubmitted(resource.data) && d.completedAt == request.time))
-        && (d.status != 'needs_revision' || resource.data.status == 'needs_revision' || allSubmitted(resource.data));
+        && d.get('sku','') == resource.data.get('sku','') && d.get('skuNumber',null) == resource.data.get('skuNumber',null)
+        && d.periodKey == resource.data.periodKey
+        && validReviewChange(d,'scriptReview') && validReviewChange(d,'mediaReview');
     }
     match /users/{uid} {
       function accessChange() {
@@ -149,14 +122,14 @@ service cloud.firestore {
         let access = getAfter(/databases/$(database)/documents/employeeAccess/$(d.email)).data;
         return access.uid == uid && access.email == d.email && access.active == d.active && access.updatedAt == request.time;
       }
-      allow get: if signedIn() && request.auth.uid == uid || manager();
+      allow get: if request.auth != null && request.auth.uid == uid && (signedIn()
+        || request.auth.token.firebase.sign_in_provider == 'google.com' && resource.data.role == 'admin' && !('username' in resource.data)) || manager();
       allow list: if manager();
-      allow create: if signedIn() && request.auth.uid == uid && request.auth.token.email_verified == true
-        && validUser(request.resource.data,uid) && request.resource.data.email == request.auth.token.email.lower()
-        && emailAllowed() && request.resource.data.role == 'employee' && request.resource.data.active == true && request.resource.data.createdAt == request.time;
+      allow create: if false; // Accounts and profiles are provisioned only through the ADMIN API.
       allow update: if (admin() || manager() && resource.data.role == 'employee'
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active','updatedAt']))
         && validUser(request.resource.data,uid)
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['username','position','contactEmail'])
         && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.email == resource.data.email
         && (request.resource.data.active == resource.data.active || accessChange())
         && (request.auth.uid != uid || request.resource.data.active == true && request.resource.data.role == 'admin');
@@ -172,7 +145,7 @@ service cloud.firestore {
       }
     }
     match /employeeAccess/{email} {
-      allow get: if signedIn() && request.auth.token.email.lower() == email || manager();
+      allow get: if request.auth != null && request.auth.token.email.lower() == email || manager();
       allow create, update: if manager()
         && request.resource.data.keys().hasOnly(['uid','email','active','updatedAt'])
         && request.resource.data.email == email && request.resource.data.active is bool
@@ -184,49 +157,17 @@ service cloud.firestore {
     }
     match /tasks/{id} {
       allow read: if manager() || active() && request.auth.uid in resource.data.assigneeUids;
-      allow create: if manager() && validTask(request.resource.data)
-        && allocatedSku(request.resource.data,id)
-        && validContentInfo(request.resource.data.contentInfo)
-        && validReview(request.resource.data.scriptReview) && validReview(request.resource.data.mediaReview)
-        && request.resource.data.scriptReview.reviewedAt == null && request.resource.data.mediaReview.reviewedAt == null
-        && request.resource.data.createdByUid == request.auth.uid && request.resource.data.createdByName == me().fullName
-        && request.resource.data.createdAt == request.time && request.resource.data.status == 'todo' && request.resource.data.submittedUids.size() == 0;
+      allow create: if false; // Server transaction allocates unique monthly SKUs.
       allow update: if manager()
-        ? adminSkuEdit(id) || skuMigration(id) || (validSkuUpdate(request.resource.data,id) && managerUpdate() && validTask(request.resource.data) && validProductionUpdate(request.resource.data))
+        ? managerUpdate() && validTask(request.resource.data) && validProductionUpdate(request.resource.data)
         : employeeReport() || employeePublication();
       allow delete: if admin();
     }
-    match /counters/taskSku {
-      function manualRename() {
-        let d = request.resource.data;
-        let before = get(/databases/$(database)/documents/tasks/$(d.taskId)).data;
-        let after = getAfter(/databases/$(database)/documents/tasks/$(d.taskId)).data;
-        return admin() && d.keys().hasOnly(['value','taskId','updatedAt','manualSku','manualNumber'])
-          && d.manualSku is string && d.manualSku.size() <= 80 && d.manualSku.matches('^[a-z0-9][a-z0-9._-]*$')
-          && d.manualNumber is int && d.manualNumber >= 0 && d.manualNumber <= 999999999
-          && (d.manualNumber == 0 ? !d.manualSku.matches('^vuatoi[.][0-9]+$') : d.manualSku == skuFor(d.manualNumber))
-          && d.value is int && d.value == (d.manualNumber > resource.data.value ? d.manualNumber : resource.data.value)
-          && d.updatedAt == request.time && hasSku(before) && before.sku != after.sku
-          && after.sku == d.manualSku && after.updatedAt == request.time
-          && after.diff(before).affectedKeys().hasOnly(['sku','updatedAt']);
-      }
-      function allocation() {
-        let d = request.resource.data;
-        let target = getAfter(/databases/$(database)/documents/tasks/$(d.taskId)).data;
-        let ids = d.get('taskIds',[d.taskId]);
-        let first = d.get('firstValue',d.value);
-        return manager() && d.keys().hasOnly(['value','taskId','updatedAt','firstValue','taskIds']) && d.value is int && d.value >= 1 && d.value <= 999999999
-          && first is int && first >= 1 && ids is list && ids.size() >= 1 && ids.size() <= 50 && ids.toSet().size() == ids.size()
-          && d.value == first + ids.size() - 1 && d.taskId == ids[ids.size() - 1]
-          && text(d.taskId,128) && d.taskId != '' && d.updatedAt == request.time
-          && target.skuNumber == d.value && target.sku == skuFor(d.value)
-          && (!exists(/databases/$(database)/documents/tasks/$(d.taskId)) || !hasSku(get(/databases/$(database)/documents/tasks/$(d.taskId)).data));
-      }
-      allow get: if manager();
-      allow create: if allocation() && request.resource.data.get('firstValue',request.resource.data.value) == 1;
-      allow update: if manualRename() || allocation() && request.resource.data.get('firstValue',request.resource.data.value) == resource.data.value + 1;
-      allow delete: if false;
-    }
+    match /staffSalary/{uid} { allow read: if admin(); allow write: if false; }
+    match /loginNames/{username} { allow read,write: if false; }
+    match /accountAudit/{id} { allow read: if admin(); allow write: if false; }
+    match /skuMonths/{month} { allow read: if manager(); allow write: if false; }
+    match /counters/{id} { allow read,write: if false; }
     match /{document=**} { allow read,write: if false; }
   }
 }

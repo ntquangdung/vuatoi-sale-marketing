@@ -32,6 +32,7 @@ export function stageState(task: MarketingTask, stage: ReviewStage): keyof typeo
   if (!members.length) return 'not_applicable'
   if (task.status === 'done' && !review.reviewedAt) return 'approved'
   const matches = review.signature === stageSignature(task, stage)
+  if (matches && review.manual) return review.status
   if (matches && review.status === 'needs_revision') return 'needs_revision'
   if (members.some(uid => task.contributions[uid]?.status !== 'submitted')) return 'not_submitted'
   return matches ? review.status : 'pending'

@@ -10,8 +10,10 @@ export interface ContentInfo {
   pageName: string; videoType: string; contentLine: string; ageGroups: string[]
   audience: string; campaign: string; sourceUrl: string; sourceStatus: SourceStatus
 }
-export interface StageReview { status: ReviewStatus; byUid: string; byName: string; signature: string; reviewedAt: string | null }
-export interface UserProfile { uid: string; fullName: string; email: string; role: Role; active: boolean; createdAt: string; updatedAt: string }
+export interface StageReview { status: ReviewStatus; byUid: string; byName: string; signature: string; reviewedAt: string | null; manual?: boolean }
+export interface UserProfile { uid: string; fullName: string; email: string; username?: string; position?: 'content' | 'media'; contactEmail?: string; role: Role; active: boolean; createdAt: string; updatedAt: string }
+export interface AccountInput { username: string; password?: string; fullName: string; salary: number; position: 'content' | 'media' }
+export interface BoardInput extends TaskInput { sku: string; contributions: Record<string, Contribution>; scriptReview: StageReview; mediaReview: StageReview; status: TaskStatus; publicationStatus: PublicationStatus; plannedPublishDate: string | null; publishedDate: string | null; postUrl: string | null }
 export interface Assignment { fullName: string; workRole: WorkRole }
 export interface Contribution { title: string; scriptUrl: string; sourceUrl: string; mediaUrl: string; note: string; status: 'pending' | 'working' | 'submitted'; submittedAt: string | null }
 export interface MarketingTask {

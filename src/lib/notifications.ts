@@ -5,7 +5,7 @@ import type { MarketingTask } from '../types'
 
 export const alertKey = (task: MarketingTask, kind: 'soon' | 'late') => `${task.deadlineAt}:${kind}`
 
-// Read state belongs to the Google account and is shared across its devices.
+// Read state belongs to the employee account and is shared across its devices.
 export function watchReadAlerts(uid: string, next: (keys: Record<string, string>) => void, error: () => void) {
   if (!firestore) return () => {}
   return onSnapshot(query(collection(firestore, 'users', uid, 'deadlineReads'), orderBy('readAt', 'desc'), limit(500)), snapshot => {

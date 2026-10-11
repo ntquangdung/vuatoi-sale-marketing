@@ -1,8 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { accountApiPlugin } from './backend/dev-plugin.mjs'
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), accountApiPlugin()],
   build: {
     rollupOptions: {
       output: {

@@ -1,11 +1,15 @@
-import type { ContentInfo, Contribution, MarketingTask, TaskInput, UserProfile, PublicationStatus, ReviewStage } from '../types'
+import type { AccountInput, BoardInput, ContentInfo, Contribution, MarketingTask, TaskInput, UserProfile, PublicationStatus, ReviewStage } from '../types'
 import { firebaseApi } from './firebaseApi'
 export { ApiError } from './api'
 export { firebaseConfigError } from './firebase'
 export type ReportInput = Pick<Contribution, 'title' | 'scriptUrl' | 'sourceUrl' | 'mediaUrl' | 'note'> & { submit: boolean }
 export interface PublicationInput { publicationStatus: PublicationStatus; publishedDate: string | null; postUrl: string | null; requiresPublishing?: boolean; plannedPublishDate?: string | null }
 export interface DataApi {
-  loginGoogle(): Promise<{ user: UserProfile }>
+  login(username: string, password: string): Promise<{ user: UserProfile }>
+  account(data: AccountInput, uid?: string, migration?: boolean): Promise<{ user: UserProfile }>
+  salary(uid: string): Promise<number>
+  resetSkus(month: string): Promise<{ count: number; nextSku: string }>
+  editBoard(id: string, data: BoardInput, expectedUpdatedAt: string): Promise<{ task: MarketingTask }>
   logout(): Promise<{ ok: boolean }>
   me(): Promise<{ user: UserProfile }>
   users(): Promise<{ users: UserProfile[] }>

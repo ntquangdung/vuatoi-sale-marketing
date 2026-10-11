@@ -1,12 +1,12 @@
-import { GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth'
-import { arrayRemove, arrayUnion, collection, doc, FieldPath, getDoc, getDocs, getDocsFromServer, onSnapshot, query, runTransaction, serverTimestamp, Timestamp, updateDoc, where, writeBatch, type DocumentData, type DocumentReference, type DocumentSnapshot, type Transaction } from 'firebase/firestore'
-import type { Assignment, ContentInfo, Contribution, MarketingTask, StageReview, TaskInput, UserProfile } from '../types'
+import { signInWithEmailAndPassword, signOut } from 'firebase/auth'
+import { loginEmail } from '../../shared/accounts.mjs'
+import { arrayRemove, arrayUnion, collection, doc, FieldPath, getDoc, getDocs, onSnapshot, query, runTransaction, serverTimestamp, Timestamp, updateDoc, where, writeBatch, type DocumentData, type DocumentSnapshot } from 'firebase/firestore'
+import type { ContentInfo, Contribution, MarketingTask, StageReview, UserProfile } from '../types'
 import { ApiError } from './api'
 import { firebaseAuth, firestore } from './firebase'
 import type { DataApi } from './data'
-import { emptyContribution, periodAt, taskStatus, validLink } from '../utils/tasks'
-import { ageOptions, emptyContentInfo, emptyReview, normalizeSku, skuFor, skuSequence, stageMembers, stageSignature } from '../utils/content'
-import { copyTaskInput, validateCopyCount } from '../utils/duplicate'
+import { emptyContribution, taskStatus, validLink } from '../utils/tasks'
+import { ageOptions, emptyContentInfo, emptyReview, stageMembers, stageSignature } from '../utils/content'
 
 function services() {
   if (!firebaseAuth || !firestore) throw new Error('Chưa cấu hình Firebase. Kiểm tra .env.local.')
@@ -15,8 +15,6 @@ function services() {
 function message(error: unknown): never {
   const code = (error as { code?: string })?.code || ''
   if (code === 'permission-denied') throw new ApiError('Bạn không có quyền thực hiện thao tác này hoặc tài khoản đã bị khóa.', 403)
-  if (code === 'auth/popup-closed-by-user') throw new Error('Cửa sổ đăng nhập đã đóng. Bạn có thể thử lại.')
-  if (code === 'auth/popup-blocked') throw new Error('Cho phép cửa sổ Google trong trình duyệt rồi thử lại.')
   if (code === 'auth/unauthorized-domain') throw new Error('Tên miền chưa được cho phép trong Firebase Authentication.')
   if (code === 'unavailable') throw new Error('Không kết nối được Firestore. Kiểm tra kết nối mạng.')
   throw error
@@ -24,7 +22,7 @@ function message(error: unknown): never {
 const iso = (value: unknown): string => value && typeof (value as Timestamp).toDate === 'function' ? (value as Timestamp).toDate().toISOString() : typeof value === 'string' ? value : ''
 function profile(snapshot: DocumentSnapshot<DocumentData>): UserProfile {
   const v = snapshot.data()!
-  return { uid: snapshot.id, fullName: v.fullName, email: v.email, role: v.role, active: v.active, createdAt: iso(v.createdAt), updatedAt: iso(v.updatedAt) }
+  return { username:v.username, position:v.position, contactEmail:v.contactEmail, uid: snapshot.id, fullName: v.fullName, email: v.email, role: v.role, active: v.active, createdAt: iso(v.createdAt), updatedAt: iso(v.updatedAt) }
 }
 function task(snapshot: DocumentSnapshot<DocumentData>): MarketingTask {
   const v = snapshot.data()!
@@ -40,26 +38,28 @@ async function currentUser(): Promise<UserProfile> {
   const { auth, db } = services()
   await auth.authStateReady()
   if (!auth.currentUser) throw new ApiError('Vui lòng đăng nhập.', 401)
-  const google = auth.currentUser
+  const identity = auth.currentUser
   try {
-    const ref = doc(db, 'users', google.uid)
-    await runTransaction(db, async tx => {
-      const access = await tx.get(doc(db, 'employeeAccess', google.email!.toLowerCase()))
-      if (access.exists() && !access.data().active) throw new ApiError('Tài khoản đã bị thu hồi quyền truy cập. Liên hệ ADMIN hoặc quản lý để được cấp lại quyền.', 403)
-      if ((await tx.get(ref)).exists()) return
-      tx.set(ref, { uid: google.uid, fullName: (google.displayName || google.email?.split('@')[0] || 'Nhân viên').slice(0, 120), email: google.email!.toLowerCase(), role: 'employee', active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp() })
-    })
-    const user = profile(await getDoc(ref))
-    if (!['admin', 'manager', 'employee'].includes(user.role) || !user.active) {
-      await signOut(auth)
-      throw new ApiError('Tài khoản đã bị thu hồi quyền truy cập. Liên hệ ADMIN hoặc quản lý để được cấp lại quyền.', 403)
-    }
+    const snapshot = await getDoc(doc(db,'users',identity.uid))
+    if (!snapshot.exists()) throw new ApiError('Tài khoản chưa được ADMIN cấp quyền.',403)
+    const user=profile(snapshot)
+    if (!user.active || !['admin','manager','employee'].includes(user.role)) throw new ApiError('Tài khoản đã bị thu hồi quyền. Liên hệ ADMIN hoặc quản lý.',403)
+    const token=await identity.getIdTokenResult()
+    if(token.signInProvider!=='password' && !(user.role==='admin'&&!user.username)) throw new ApiError('Vui lòng dùng tài khoản và mật khẩu do ADMIN cấp.',403)
+    const access=await getDoc(doc(db,'employeeAccess',user.email))
+    if(access.exists()&&!access.data().active) throw new ApiError('Tài khoản đã bị thu hồi quyền.',403)
     return user
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 403 && auth.currentUser?.uid === google.uid) await signOut(auth)
-    message(error)
-  }
+  } catch(error) { if(error instanceof ApiError&&error.status===403) await signOut(auth); message(error) }
 }
+async function serverCall<T>(route:string,body:unknown):Promise<T> {
+  const identity=services().auth.currentUser
+  if(!identity) throw new ApiError('Vui lòng đăng nhập.',401)
+  const response=await fetch('/api/'+route,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+await identity.getIdToken()},body:JSON.stringify(body)})
+  const data=await response.json().catch(()=>({error:'API chưa sẵn sàng. Liên hệ ADMIN.'}))
+  if(!response.ok) throw new ApiError(data.error || 'Không thực hiện được thao tác.',response.status)
+  return data as T
+}
+
 async function requireManager() {
   const user = await currentUser()
   if (user.role === 'employee') throw new ApiError('Chỉ ADMIN hoặc quản lý được thực hiện thao tác này.', 403)
@@ -77,71 +77,11 @@ async function getTask(id: string) {
   if (!snapshot.exists()) throw new ApiError('Không tìm thấy công việc.', 404)
   return task(snapshot)
 }
-function validateTask(data: TaskInput) {
-  if (!data.title.trim() || data.title.trim().length > 180) throw new Error('Tên công việc cần có từ 1 đến 180 ký tự.')
-  if (data.description.length > 5000) throw new Error('Mô tả tối đa 5.000 ký tự.')
-  if (!data.deadlineAt || !Number.isFinite(Date.parse(data.deadlineAt))) throw new Error('Chọn ngày và giờ deadline hợp lệ.')
-  if (!data.assignees.length || data.assignees.length > 8 || new Set(data.assignees.map(a => a.uid)).size !== data.assignees.length) throw new Error('Chọn từ 1 đến 8 nhân viên khác nhau.')
-  if (!validLink(data.referenceUrl) || data.referenceUrl.length > 2000) throw new Error('Link tài liệu cần bắt đầu bằng https:// hoặc http://.')
-  validateContentInfo(data.contentInfo)
-}
 function validateContentInfo(info: ContentInfo) {
   for (const key of ['pageName','videoType','contentLine','audience','campaign'] as const) if (typeof info[key] !== 'string' || info[key].length > 180) throw new Error('Thông tin nội dung tối đa 180 ký tự mỗi trường.')
   if (!Array.isArray(info.ageGroups) || info.ageGroups.length > 6 || new Set(info.ageGroups).size !== info.ageGroups.length || info.ageGroups.some(age => !ageOptions.includes(age))) throw new Error('Nhóm tuổi không hợp lệ.')
   if (typeof info.sourceUrl !== 'string' || info.sourceUrl.length > 2000 || !validLink(info.sourceUrl)) throw new Error('Link source cần là http:// hoặc https:// hợp lệ.')
   if (!['not_started','shooting','recorded'].includes(info.sourceStatus)) throw new Error('Trạng thái source không hợp lệ.')
-}
-async function assignmentsFor(data: TaskInput, before?: MarketingTask): Promise<Record<string, Assignment>> {
-  const result: Record<string, Assignment> = {}
-  for (const a of data.assignees) {
-    const snapshot = await getDoc(doc(services().db, 'users', a.uid))
-    if (!snapshot.exists() || !snapshot.data().active || snapshot.data().role !== 'employee') {
-      if (before?.assignments[a.uid]?.workRole !== a.workRole) throw new Error('Chỉ giao phần việc mới cho nhân viên đang hoạt động.')
-      result[a.uid] = before.assignments[a.uid]
-    } else result[a.uid] = { fullName: snapshot.data().fullName, workRole: a.workRole }
-  }
-  return result
-}
-const editableFields = (data: TaskInput, assignments: Record<string, Assignment>) => ({
-  title: data.title.trim(), description: data.description.trim(), taskType: data.taskType,
-  referenceUrl: data.referenceUrl.trim(), assigneeUids: data.assignees.map(a => a.uid), assignments,
-  deadlineAt: Timestamp.fromDate(new Date(data.deadlineAt)), periodKey: periodAt(data.deadlineAt),
-  requiresPublishing: data.requiresPublishing,
-  contentInfo: Object.fromEntries(Object.entries(data.contentInfo).map(([key,value]) => [key,typeof value === 'string' ? value.trim() : value])),
-})
-function newTaskFields(data: TaskInput, assignments: Record<string, Assignment>, actor: UserProfile, skuNumber: number) {
-  return {
-    ...editableFields(data, assignments), sku: skuFor(skuNumber), skuNumber,
-    scriptReview: emptyReview(), mediaReview: emptyReview(),
-    contributions: Object.fromEntries(data.assignees.map(a => [a.uid, emptyContribution()])), submittedUids: [],
-    createdByUid: actor.uid, createdByName: actor.fullName, status: 'todo',
-    publicationStatus: data.requiresPublishing ? 'not_scheduled' : 'not_applicable', plannedPublishDate: null,
-    publishedDate: null, postUrl: null, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), completedAt: null,
-  }
-}
-async function allocateSku(write: (tx: Transaction, counter: DocumentReference, firstValue: number) => Promise<void>) {
-  const db = services().db, counter = doc(db, 'counters', 'taskSku')
-  for (let attempt = 0; ; attempt++) {
-    let previousValue: number | null = null
-    let previousRevision = ''
-    try {
-      await runTransaction(db, async tx => {
-        const before = (await tx.get(counter)).data()
-        previousValue = before?.value || 0
-        previousRevision = before?.updatedAt?.toString() || ''
-        await write(tx, counter, previousValue! + 1)
-      })
-      return
-    } catch (error) {
-      // Some Firestore evaluations reject a stale counter before the SDK reports a conflict.
-      // Retry only a failed atomic write whose counter changed; stable refs avoid duplicates.
-      if (attempt < 3 && previousValue !== null && (error as {code?: string}).code === 'permission-denied') {
-        const current = (await getDoc(counter)).data()
-        if ((current?.value || 0) !== previousValue || (current?.updatedAt?.toString() || '') !== previousRevision) continue
-      }
-      throw error
-    }
-  }
 }
 async function deleteTaskBatch(ids: string[]) {
   const actor = await currentUser()
@@ -156,11 +96,19 @@ async function deleteTaskBatch(ids: string[]) {
   } catch (error) { message(error) }
 }
 export const firebaseApi: DataApi = {
-  async loginGoogle() {
-    const provider = new GoogleAuthProvider()
-    provider.setCustomParameters({ prompt: 'select_account' })
-    try { await signInWithPopup(services().auth, provider); return { user: await currentUser() } } catch (error) { message(error) }
+  async login(username,password) {
+    try {await signInWithEmailAndPassword(services().auth,loginEmail(username),password);return {user:await currentUser()}}
+    catch(error) {const code=(error as {code?:string}).code;if(code?.startsWith('auth/')) throw new Error(code==='auth/too-many-requests'?'Thử đăng nhập quá nhiều lần. Vui lòng chờ một lúc.':'Tài khoản hoặc mật khẩu không đúng, hoặc đã bị khóa.');message(error)}
   },
+  async account(data,uid,migration=false) {
+    const result=await serverCall<{uid:string}>('admin',{...data,action:migration?'migrate':uid?'update':'create',...(uid?{uid}:{})})
+    if(migration) {await signOut(services().auth);return firebaseApi.login(data.username,data.password!)}
+    if(data.password && uid===services().auth.currentUser?.uid) return firebaseApi.login(data.username,data.password)
+    return {user:profile(await getDoc(doc(services().db,'users',result.uid)))}
+  },
+  async salary(uid) { const value=await getDoc(doc(services().db,'staffSalary',uid));return value.data()?.amount || 0 },
+  async resetSkus(month) {return serverCall('board',{action:'reset',month})},
+  async editBoard(id,data,expectedUpdatedAt) {await serverCall('board',{action:'edit',id,data,expectedUpdatedAt});return {task:await getTask(id)}},
   async logout() { await signOut(services().auth); return { ok: true } },
   async me() { return { user: await currentUser() } },
   async users() {
@@ -189,8 +137,7 @@ export const firebaseApi: DataApi = {
       await runTransaction(db, async tx => {
         const snapshot = await tx.get(ref)
         if (!snapshot.exists() || snapshot.data().role !== 'employee') throw new Error('Chức năng này chỉ áp dụng cho tài khoản nhân viên.')
-        // Keep the Google UID/profile and assignment snapshots. The email entry also
-        // blocks re-enrollment if Firebase Auth later gives the Google account a new UID.
+        // Retain the identity and assignment snapshots when access is revoked.
         tx.update(ref, { active, updatedAt: serverTimestamp() })
         tx.set(doc(db, 'employeeAccess', snapshot.data().email), { uid, email: snapshot.data().email, active, updatedAt: serverTimestamp() })
       })
@@ -222,99 +169,11 @@ export const firebaseApi: DataApi = {
     if (user.role === 'employee') { error(new ApiError('Bảng nội dung dành cho ADMIN và quản lý.',403)); return () => {} }
     return onSnapshot(collection(services().db,'tasks'),snapshot => next(snapshot.docs.map(task)),err => error(err))
   },
-  async createTask(data) {
-    const actor = await requireManager(); validateTask(data)
-    try {
-      const assignments = await assignmentsFor(data)
-      if (Date.parse(data.deadlineAt) <= Date.now()) throw new Error('Deadline của công việc mới cần ở tương lai.')
-      const ref = doc(collection(services().db, 'tasks'))
-      await allocateSku(async (tx, counter, skuNumber) => {
-        tx.set(counter,{value:skuNumber,taskId:ref.id,updatedAt:serverTimestamp()})
-        tx.set(ref, newTaskFields(data, assignments, actor, skuNumber))
-      })
-      return { task: task(await getDoc(ref)) }
-    } catch (error) { message(error) }
-  },
-  async duplicateTask(id, count, deadlineAt) {
-    const actor = await requireManager(); validateCopyCount(count)
-    const db = services().db, refs = Array.from({ length: count }, () => doc(collection(db, 'tasks')))
-    let firstNumber = 0
-    try {
-      await allocateSku(async (tx, counter, firstValue) => {
-        const source = await tx.get(doc(db, 'tasks', id))
-        if (!source.exists()) throw new Error('Không tìm thấy công việc mẫu.')
-        const before = task(source), input = copyTaskInput(before, deadlineAt)
-        validateTask(input)
-        if (Date.parse(deadlineAt) <= Date.now()) throw new Error('Chọn deadline tương lai cho các bản mới.')
-        // All profile reads precede writes; retrying the transaction cannot produce partial copies.
-        for (const uid of before.assigneeUids) {
-          const member = await tx.get(doc(db, 'users', uid))
-          if (!member.exists() || !member.data().active || member.data().role !== 'employee') throw new Error('Task mẫu có nhân viên ngừng hoạt động. Cập nhật người được giao trước khi sao chép.')
-        }
-        tx.set(counter, { value: firstValue + count - 1, firstValue, taskIds: refs.map(ref => ref.id), taskId: refs[count - 1].id, updatedAt: serverTimestamp() })
-        refs.forEach((ref, index) => tx.set(ref, newTaskFields(input, before.assignments, actor, firstValue + index)))
-        firstNumber = firstValue
-      })
-      return { count, firstSku: skuFor(firstNumber), lastSku: skuFor(firstNumber + count - 1), periodKey: periodAt(deadlineAt) }
-    } catch (error) { message(error) }
-  },
-  async updateTask(id, data) {
-    await requireManager(); validateTask(data)
-    try {
-      const ref = doc(services().db, 'tasks', id)
-      const assignments = await assignmentsFor(data, await getTask(id))
-      await runTransaction(services().db, async tx => {
-        const snapshot = await tx.get(ref)
-        if (!snapshot.exists()) throw new Error('Không tìm thấy công việc.')
-        const before = task(snapshot)
-        if (['done', 'cancelled'].includes(before.status)) throw new Error('Không thể sửa công việc đã hoàn thành hoặc hủy.')
-        if (Date.parse(data.deadlineAt) <= Date.parse(before.createdAt)) throw new Error('Deadline phải sau thời điểm tạo công việc.')
-        const contributions = Object.fromEntries(data.assignees.map(a => [a.uid, before.assignments[a.uid]?.workRole === a.workRole ? snapshot.data().contributions[a.uid] : { ...(snapshot.data().contributions[a.uid] || emptyContribution()), status: 'pending', submittedAt: null }]))
-        tx.update(ref, {
-          ...editableFields(data, assignments), contributions,
-          submittedUids: before.submittedUids.filter(uid => data.assignees.some(a => a.uid === uid && a.workRole === before.assignments[uid].workRole)),
-          publicationStatus: !data.requiresPublishing ? 'not_applicable' : before.publicationStatus === 'not_applicable' ? 'not_scheduled' : before.publicationStatus,
-          plannedPublishDate: data.requiresPublishing ? before.plannedPublishDate : null,
-          publishedDate: data.requiresPublishing ? before.publishedDate : null, postUrl: data.requiresPublishing ? before.postUrl : null, updatedAt: serverTimestamp(),
-        })
-      })
-      return { task: await getTask(id) }
-    } catch (error) { message(error) }
-  },
-  async renameTask(id, title) {
-    await requireManager()
-    if (!title.trim() || title.trim().length > 180) throw new Error('Tiêu đề cần có từ 1 đến 180 ký tự.')
-    try {
-      const ref = doc(services().db, 'tasks', id)
-      await runTransaction(services().db, async tx => {
-        const snapshot = await tx.get(ref)
-        if (!snapshot.exists() || ['done', 'cancelled'].includes(snapshot.data().status)) throw new Error('Không thể sửa công việc đã đóng.')
-        tx.update(ref, { title: title.trim(), updatedAt: serverTimestamp() })
-      })
-      return { task: await getTask(id) }
-    } catch (error) { message(error) }
-  },
-  async renameSku(id, value) {
-    const actor = await currentUser()
-    if (actor.role !== 'admin') throw new ApiError('Chỉ ADMIN được sửa SKU.', 403)
-    const sku = normalizeSku(value), manualNumber = skuSequence(sku)
-    try {
-      const db = services().db, ref = doc(db, 'tasks', id)
-      await allocateSku(async (tx, counter) => {
-        const sequence = await tx.get(counter), snapshot = await tx.get(ref)
-        if (!snapshot.exists()) throw new Error('Không tìm thấy công việc.')
-        if (snapshot.data().sku === sku) return
-        if (!snapshot.data().sku || !sequence.exists()) throw new Error('Đợi cấp SKU tự động trước khi sửa.')
-        // Every allocation and rename writes this same counter. A concurrent change retries
-        // this fresh server query, so two clients cannot commit the same SKU through this API.
-        const matches = await getDocsFromServer(query(collection(db, 'tasks'), where('sku', '==', sku)))
-        if (matches.docs.some(match => match.id !== id)) throw new Error('SKU này đang được sử dụng. Chọn một mã khác.')
-        tx.set(counter, { value: Math.max(sequence.data().value, manualNumber), taskId: id, manualSku: sku, manualNumber, updatedAt: serverTimestamp() })
-        tx.update(ref, { sku, updatedAt: serverTimestamp() })
-      })
-      return { task: await getTask(id) }
-    } catch (error) { message(error) }
-  },
+  async createTask(data) {const result=await serverCall<{id:string}>('board',{action:'create',data});return {task:await getTask(result.id)}},
+  async duplicateTask(id,count,deadlineAt) {return serverCall('board',{action:'copy',id,count,deadlineAt})},
+  async updateTask(id,data) {await serverCall('board',{action:'edit',id,data});return {task:await getTask(id)}},
+  async renameTask(id,title) {await requireManager();await updateDoc(doc(services().db,'tasks',id),{title:title.trim(),updatedAt:serverTimestamp()});return {task:await getTask(id)}},
+  async renameSku(id,sku) {await serverCall('board',{action:'rename',id,sku});return {task:await getTask(id)}},
   async report(id, data) {
     const actor = await currentUser()
     if (![data.scriptUrl, data.sourceUrl, data.mediaUrl].every(validLink)) throw new Error('Link cần bắt đầu bằng https:// hoặc http://.')
@@ -335,17 +194,7 @@ export const firebaseApi: DataApi = {
       return { task: await getTask(id) }
     } catch (error) { message(error) }
   },
-  async ensureSkus(ids) {
-    await requireManager()
-    try {
-      for (const id of ids) await allocateSku(async (tx, counter, skuNumber) => {
-        const ref = doc(services().db,'tasks',id), snapshot = await tx.get(ref)
-        if (!snapshot.exists() || snapshot.data().sku) return
-        tx.set(counter,{value:skuNumber,taskId:id,updatedAt:serverTimestamp()})
-        tx.update(ref,{sku:skuFor(skuNumber),skuNumber,updatedAt:serverTimestamp()})
-      })
-    } catch (error) { message(error) }
-  },
+  async ensureSkus(ids) {for(const id of ids) await serverCall('board',{action:'missing',id})},
   async updateContentInfo(id, changes) {
     await requireManager()
     try {
@@ -354,7 +203,6 @@ export const firebaseApi: DataApi = {
         const snapshot = await tx.get(ref)
         if (!snapshot.exists()) throw new Error('Không tìm thấy công việc.')
         const before = task(snapshot)
-        if (before.status === 'cancelled') throw new Error('Công việc đã hủy.')
         const info = { ...before.contentInfo,...changes }; validateContentInfo(info)
         tx.update(ref,{contentInfo:info,updatedAt:serverTimestamp()})
       })
@@ -369,12 +217,10 @@ export const firebaseApi: DataApi = {
         const snapshot = await tx.get(ref)
         if (!snapshot.exists()) throw new Error('Không tìm thấy công việc.')
         const before = task(snapshot), members = stageMembers(before,stage)
-        if (['done','cancelled'].includes(before.status)) throw new Error('Công việc đã đóng.')
-        if (!members.length || members.some(uid => before.contributions[uid].status !== 'submitted')) throw new Error('Cần nộp đủ kết quả của phần việc này trước khi duyệt.')
         const next = status === 'needs_revision' ? { ...before,contributions:{...before.contributions} } : before
         if (status === 'needs_revision') for (const uid of members) next.contributions[uid] = { ...next.contributions[uid],status:'working',submittedAt:null }
         tx.update(ref,{
-          [stage === 'script' ? 'scriptReview' : 'mediaReview']: {status,byUid:actor.uid,byName:actor.fullName,signature:stageSignature(next,stage),reviewedAt:serverTimestamp()},
+          [stage === 'script' ? 'scriptReview' : 'mediaReview']: {status,byUid:actor.uid,byName:actor.fullName,signature:stageSignature(next,stage),manual:true,reviewedAt:serverTimestamp()},
           ...(status === 'needs_revision' ? {contributions:Object.fromEntries(Object.entries(snapshot.data().contributions).map(([uid,c]) => [uid,members.includes(uid) ? {...(c as object),status:'working',submittedAt:null} : c])),submittedUids:before.submittedUids.filter(uid => !members.includes(uid))} : {}),
           updatedAt:serverTimestamp(),
         })
@@ -411,6 +257,7 @@ export const firebaseApi: DataApi = {
         const snapshot = await tx.get(ref)
         if (!snapshot.exists()) throw new Error('Không tìm thấy công việc.')
         const before = task(snapshot), required = data.requiresPublishing ?? before.requiresPublishing
+        if (actor.role==='employee' && before.status==='cancelled') throw new Error('Công việc đã hủy.')
         if (actor.role === 'employee' && (!before.assigneeUids.includes(actor.uid) || required !== before.requiresPublishing)) throw new ApiError('Bạn chỉ được cập nhật lịch đăng của công việc được giao.', 403)
         if (before.status === 'cancelled') throw new Error('Công việc đã hủy.')
         if (required && !['scheduled', 'published'].includes(data.publicationStatus)) throw new Error('Chọn Đã lên lịch hoặc Đã đăng.')
