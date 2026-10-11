@@ -15,7 +15,7 @@ export function TaskForm({ existing, users, save, children }: { existing?: Marke
   async function submit(e: FormEvent) { e.preventDefault(); setBusy(true); setError(''); try { await save(data) } catch (e) { setError((e as Error).message) } finally { setBusy(false) } }
   return <form className="form-stack" onSubmit={submit}>
     <div className="sku-preview"><b>{existing?.sku || 'SKU tự động'}</b><span>{existing?.sku ? 'ADMIN và quản lý có thể sửa SKU tại bảng nội dung' : 'Mã vuatoi.0001, vuatoi.0002… được cấp khi tạo'}</span></div>
-    <label>Tên công việc<input autoFocus required maxLength={180} value={data.title} onChange={e => field('title', e.target.value)} placeholder="Ví dụ: Video giới thiệu tỏi Lý Sơn" /></label>
+    <label>Caption / Tên công việc<input autoFocus required maxLength={180} value={data.title} onChange={e => field('title', e.target.value)} placeholder="Ví dụ: Video giới thiệu tỏi Lý Sơn" /></label>
     <label>Mô tả / yêu cầu<textarea rows={3} maxLength={5000} value={data.description} onChange={e => field('description', e.target.value)} placeholder="Mục tiêu và yêu cầu cần hoàn thành…" /></label>
     <label>Link tài liệu giao cho nhân viên<input type="url" maxLength={2000} value={data.referenceUrl} onChange={e => field('referenceUrl', e.target.value)} placeholder="https://docs.google.com/…" /></label>
     <details className="content-form-section" open><summary>Thông tin bảng nội dung</summary><div className="form-stack"><ContentInfoFields value={data.contentInfo} change={value => field('contentInfo',value)} /></div></details>

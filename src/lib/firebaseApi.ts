@@ -187,7 +187,7 @@ export const firebaseApi: DataApi = {
       if (['done', 'cancelled'].includes(before.status)) throw new Error('Công việc đã đóng.')
       if (!data.submit && before.contributions[actor.uid].status === 'submitted') throw new Error('Phần việc đã nộp. Dùng Nộp lại kết quả để cập nhật.')
       const role = before.assignments[actor.uid].workRole
-      if (data.submit && (role === 'content' ? !data.title.trim() || !data.scriptUrl : role === 'media' ? !data.mediaUrl : !data.note.trim() && !data.scriptUrl && !data.sourceUrl && !data.mediaUrl)) throw new Error(role === 'content' ? 'Thêm tiêu đề và link kịch bản trước khi nộp.' : role === 'media' ? 'Thêm link media đã edit trước khi nộp.' : 'Thêm kết quả trước khi nộp.')
+      if (data.submit && (role === 'content' ? !data.title.trim() || !data.scriptUrl : role === 'media' ? !data.mediaUrl : !data.note.trim() && !data.scriptUrl && !data.sourceUrl && !data.mediaUrl)) throw new Error(role === 'content' ? 'Thêm caption và link kịch bản trước khi nộp.' : role === 'media' ? 'Thêm link media đã edit trước khi nộp.' : 'Thêm kết quả trước khi nộp.')
       // Only this member's map entry changes; atomic set operations preserve concurrent submissions.
       await updateDoc(ref, new FieldPath('contributions',actor.uid), {
         title:data.title.trim(),scriptUrl:data.scriptUrl.trim(),sourceUrl:data.sourceUrl.trim(),mediaUrl:data.mediaUrl.trim(),note:data.note.trim(),
