@@ -40,6 +40,8 @@ Cấu hình production đã được chủ project phê duyệt:
 - Issuer `https://oidc.vercel.com/vuatoi-mkt`; audience `https://vercel.com/vuatoi-mkt`.
 - Chỉ subject `owner:vuatoi-mkt:project:vuatoi-sale-marketing:environment:production` được impersonate service account với `roles/iam.workloadIdentityUser`.
 - Bật APIs IAM, IAM Credentials, STS; bật Email/Password trong Firebase Authentication. Không yêu cầu bật Blaze.
+- Chặn người dùng tự đăng ký/xóa tài khoản Auth (`client.permissions.disabledUserSignup` và `disabledUserDeletion`); ADMIN SDK vẫn cấp tài khoản.
+- Vercel production dùng Node 24 và biến cấu hình `NODE_OPTIONS=--experimental-require-module` để nạp Firebase Admin 14. Không chứa credential trong biến này.
 
 Đổi các biến `FIREBASE_PROJECT_ID`, `GCP_PROJECT_NUMBER`, `GCP_WORKLOAD_IDENTITY_POOL_ID`, `GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID`, `GCP_SERVICE_ACCOUNT_EMAIL` nếu chuyển project.
 
