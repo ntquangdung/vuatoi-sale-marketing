@@ -17,7 +17,7 @@ service cloud.firestore {
       return d.keys().hasAll(['uid', 'fullName', 'email', 'role', 'active', 'createdAt', 'updatedAt'])
         && d.keys().hasOnly(['uid', 'fullName', 'email', 'role', 'active', 'createdAt', 'updatedAt','username','position','contactEmail'])
         && (!('username' in d) || d.username is string && d.username.matches('^[a-z0-9][a-z0-9._-]{2,39}$'))
-        && (!('position' in d) || d.position in ['content','media'])
+        && (!('position' in d) || d.position in ['content','media','manager','admin'])
         && (!('contactEmail' in d) || text(d.contactEmail,254))
         && d.uid == uid && text(d.fullName,120) && d.fullName.size() > 0
         && text(d.email,254) && d.email.matches('^[^ @]+@[^ @]+[.][^ @]+$')
@@ -129,7 +129,10 @@ service cloud.firestore {
       allow update: if (admin() || manager() && resource.data.role == 'employee'
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active','updatedAt']))
         && validUser(request.resource.data,uid)
-        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['username','position','contactEmail'])
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['username','contactEmail'])
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['position','role'])
+          || (request.resource.data.get('position','') in ['content','media'] && request.resource.data.role == 'employee')
+          || request.resource.data.get('position','') == request.resource.data.role && request.resource.data.role in ['admin','manager'])
         && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.email == resource.data.email
         && (request.resource.data.active == resource.data.active || accessChange())
         && (request.auth.uid != uid || request.resource.data.active == true && request.resource.data.role == 'admin');

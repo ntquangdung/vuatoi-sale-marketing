@@ -13,7 +13,7 @@ export interface DataApi {
   logout(): Promise<{ ok: boolean }>
   me(): Promise<{ user: UserProfile }>
   users(): Promise<{ users: UserProfile[] }>
-  updateUser(uid: string, data: Pick<UserProfile, 'fullName' | 'role' | 'active'>): Promise<{ user: UserProfile }>
+  updateUser(uid: string, data: Pick<UserProfile, 'fullName' | 'role' | 'active' | 'position'>): Promise<{ user: UserProfile }>
   setEmployeeAccess(uid: string, active: boolean): Promise<{ user: UserProfile }>
   tasks(period: string): Promise<{ tasks: MarketingTask[] }>
   task(id: string): Promise<{ task: MarketingTask }>

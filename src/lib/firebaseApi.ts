@@ -1,5 +1,5 @@
 import { signInWithEmailAndPassword, signOut } from 'firebase/auth'
-import { loginEmail } from '../../shared/accounts.mjs'
+import { loginEmail, positionForProfile, roleForPosition } from '../../shared/accounts.mjs'
 import { arrayRemove, arrayUnion, collection, doc, FieldPath, getDoc, getDocs, onSnapshot, query, runTransaction, serverTimestamp, Timestamp, updateDoc, where, writeBatch, type DocumentData, type DocumentSnapshot } from 'firebase/firestore'
 import type { ContentInfo, Contribution, MarketingTask, StageReview, UserProfile } from '../types'
 import { ApiError } from './api'
@@ -124,7 +124,9 @@ export const firebaseApi: DataApi = {
       await runTransaction(db, async tx => {
         const before = await tx.get(ref)
         if (!before.exists()) throw new Error('Không tìm thấy nhân sự.')
-        tx.update(ref, { fullName: data.fullName.trim(), role: data.role, active: data.active, updatedAt: serverTimestamp() })
+        const position=data.position || positionForProfile({role:data.role,position:before.data().position})
+        if(roleForPosition(position)!==data.role) throw new Error('Vị trí không khớp với quyền truy cập.')
+        tx.update(ref, { fullName: data.fullName.trim(), role: data.role, position, active: data.active, updatedAt: serverTimestamp() })
         if (before.data().active !== data.active) tx.set(doc(db, 'employeeAccess', before.data().email), { uid, email: before.data().email, active: data.active, updatedAt: serverTimestamp() })
       })
       return { user: profile(await getDoc(ref)) }

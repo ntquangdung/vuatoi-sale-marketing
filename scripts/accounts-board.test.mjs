@@ -43,6 +43,40 @@ test('ADMIN creates a password account with private salary and media position; n
  assert.equal(u.password,undefined);assert.equal((await db.collection('accountAudit').get()).docs[0].data().password,undefined)
  const token=await login('nhanvien');assert.equal((await auth.verifyIdToken(token)).uid,u.uid)
 })
+
+test('ADMIN can provision ADMIN and manager positions with the matching access',async()=>{
+ for(const position of ['admin','manager']) {
+  const {uid}=await manageAccount({auth,db},actor,account({username:'new.'+position,position}))
+  const user=(await db.doc('users/'+uid).get()).data()
+  assert.equal(user.position,position);assert.equal(user.role,position)
+  const token=await login('new.'+position)
+  assert.equal((await authorize(auth,db,token,false,true)).role,position)
+  if(position==='manager') await assert.rejects(authorize(auth,db,token),e=>e.status===403)
+  else assert.equal((await authorize(auth,db,token)).role,'admin')
+ }
+})
+
+test('position updates change permissions immediately and keep the existing UID and login',async()=>{
+ const data=account({action:'update',uid:'content',username:'content',password:'',position:'manager'})
+ await manageAccount({auth,db},actor,data)
+ const token=await login('content')
+ assert.equal((await authorize(auth,db,token,false,true)).role,'manager')
+ await assert.rejects(authorize(auth,db,token),e=>e.status===403)
+ await manageAccount({auth,db},actor,{...data,position:'media'})
+ assert.equal((await db.doc('users/content').get()).data().role,'employee')
+ assert.equal((await auth.verifyIdToken(await login('content'))).uid,'content')
+ await assert.rejects(authorize(auth,db,token,false,true),e=>e.status===403)
+})
+
+test('ADMIN cannot demote themselves through account API or direct profile changes',async()=>{
+ await assert.rejects(manageAccount({auth,db},actor,account({action:'update',uid:'admin',username:'admin',position:'manager',password:''})),e=>e.status===400)
+ assert.equal((await db.doc('users/admin').get()).data().role,'admin')
+ assert.equal((await auth.getUser('admin')).disabled,false)
+ await assertFails(updateDoc(doc(client('admin'),'users','admin'),{role:'manager',position:'manager',updatedAt:serverTimestamp()}))
+ await assertFails(updateDoc(doc(client('content'),'users','content'),{role:'admin',position:'admin',updatedAt:serverTimestamp()}))
+ await assertSucceeds(updateDoc(doc(client('admin'),'users','content'),{role:'manager',position:'manager',updatedAt:serverTimestamp()}))
+ await assertFails(updateDoc(doc(client('admin'),'users','content'),{position:'media',updatedAt:serverTimestamp()}))
+})
 test('migration stays blocked until the deploy operator enables password Auth and new rules',async()=>{
  await assert.rejects(assertAccountReady(db),e=>e.status===503);assert.equal((await auth.getUser('admin')).email,actor.email)
  await db.doc('system/accountAuth').set({ready:true});await assertAccountReady(db)
@@ -75,6 +109,7 @@ test('existing Google ADMIN migrates on same UID and keeps ADMIN role',async()=>
  const permitted=await authorize(oldAuth,db,'emulator-only',true)
  await manageAccount({auth,db},permitted,account({action:'migrate',username:'admin.moi',fullName:'Admin'}))
  assert.equal((await auth.verifyIdToken(await login('admin.moi'))).uid,'admin');assert.equal((await db.doc('users/admin').get()).data().role,'admin')
+ assert.equal((await db.doc('users/admin').get()).data().position,'admin')
  await assert.rejects(authorize(oldAuth,db,'emulator-only',true),e=>e.status===403)
 })
 test('self registration cannot create profiles or gain access; Google identities cannot read tasks',async()=>{

@@ -3,7 +3,8 @@
 ## Sử dụng
 
 - Đăng nhập bằng tên tài khoản + mật khẩu; không có đăng ký công khai.
-- ADMIN: Nhân sự → Cấp tài khoản. Nhập họ tên, tài khoản, mật khẩu, lương VNĐ/tháng và vị trí Content/Media.
+- ADMIN: Nhân sự → Cấp tài khoản. Nhập họ tên, tài khoản, mật khẩu, lương VNĐ/tháng và chọn vị trí Content, Media, Quản lý hoặc ADMIN. Content/Media có quyền nhân viên; Quản lý/ADMIN có quyền quản lý tương ứng. Chỉ ADMIN cấp hoặc thay đổi vị trí/quyền.
+- Thiết lập ADMIN cũ chọn sẵn ADMIN và giữ nguyên quyền. ADMIN đang đăng nhập không thể tự hạ quyền hoặc tự khóa mình.
 - Với nhân sự cũ, chọn Cấp tài khoản ngay trên hồ sơ đó để giữ UID và lịch sử công việc. Không tạo hồ sơ thay thế.
 - Tài khoản & lương: ADMIN đổi mật khẩu, lương, vị trí. Để trống mật khẩu để giữ nguyên. Mật khẩu không được lưu trong Firestore hay trả về sau khi tạo.
 - Quản lý và ADMIN thu hồi/cấp lại quyền nhân viên. Hồ sơ và tên trong task cũ được giữ lại. Không cho tự tạo lại hồ sơ để vượt quyền đã thu hồi.

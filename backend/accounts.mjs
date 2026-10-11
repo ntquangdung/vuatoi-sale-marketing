@@ -1,6 +1,6 @@
 import { FieldValue, Timestamp } from 'firebase-admin/firestore'
 import { randomUUID } from 'node:crypto'
-import { loginEmail, validateAccount } from '../shared/accounts.mjs'
+import { loginEmail, roleForPosition, validateAccount } from '../shared/accounts.mjs'
 
 export class HttpError extends Error { constructor(status, message) { super(message); this.status = status } }
 export async function assertAccountReady(db) {
@@ -30,6 +30,9 @@ export async function manageAccount({ auth, db }, actor, input) {
   }
   let data
   try { data = validateAccount(input, !before?.username) } catch (e) { throw new HttpError(400, e.message) }
+  // A legacy ADMIN keeps their authority during the one-time credential setup.
+  const position = migrating ? 'admin' : data.position, role = roleForPosition(position)
+  if (uid === actor.uid && role !== 'admin') throw new HttpError(400, 'Không thể tự hạ quyền ADMIN đang đăng nhập.')
   if (before?.username && data.username !== before.username) throw new HttpError(400, 'Tài khoản đã cấp không đổi tên đăng nhập. Có thể đổi mật khẩu, mức lương và vị trí.')
   const email = loginEmail(data.username), targetUid = uid || randomUUID(), nameRef = db.doc(`loginNames/${data.username}`)
   const lockRef=db.doc(`accountLocks/${targetUid}`), operation=randomUUID()
@@ -52,10 +55,11 @@ export async function manageAccount({ auth, db }, actor, input) {
     await db.runTransaction(async tx=>{
       const current=(await tx.get(db.doc(`users/${targetUid}`))).data()
       if(current?.username && current.username!==data.username) throw new HttpError(409,'Tài khoản vừa được cập nhật. Mở lại hồ sơ nhân sự.')
-      tx.set(db.doc(`users/${targetUid}`), { uid: targetUid, fullName: data.fullName, email, username: data.username, position: data.position, role: current?.role || 'employee', active: current?.active ?? true, ...(before?.email && before.email !== email ? { contactEmail: before.contactEmail || before.email } : {}), createdAt: current?.createdAt || timestamp, updatedAt: timestamp }, { merge: true })
+      if(before && current?.role !== before.role) throw new HttpError(409,'Vai trò vừa được cập nhật. Mở lại hồ sơ nhân sự trước khi lưu.')
+      tx.set(db.doc(`users/${targetUid}`), { uid: targetUid, fullName: data.fullName, email, username: data.username, position, role, active: current?.active ?? true, ...(before?.email && before.email !== email ? { contactEmail: before.contactEmail || before.email } : {}), createdAt: current?.createdAt || timestamp, updatedAt: timestamp }, { merge: true })
       tx.set(db.doc(`staffSalary/${targetUid}`), { amount: data.salary, currency: 'VND', period: 'month', updatedAt: timestamp, updatedBy: actor.uid })
       tx.set(db.doc(`employeeAccess/${email}`), { uid: targetUid, email, active: current?.active ?? true, updatedAt: timestamp })
-      tx.set(auditRef, { action: migrating ? 'migrate' : before ? 'update' : 'create', actorUid: actor.uid, targetUid, passwordChanged: Boolean(data.password), at: timestamp })
+      tx.set(auditRef, { action: migrating ? 'migrate' : before ? 'update' : 'create', actorUid: actor.uid, targetUid, position, role, passwordChanged: Boolean(data.password), at: timestamp })
     }); committed = true
     // Access is controlled by the retained Firestore profile. Restoring access must
     // not require recreating an Auth identity (which would lose assignment history).
