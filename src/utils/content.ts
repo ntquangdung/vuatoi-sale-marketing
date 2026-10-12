@@ -1,6 +1,7 @@
 import type { ContentInfo, MarketingTask, ReviewStage, StageReview } from '../types'
 
 export const ageOptions = ['Dưới 18', '18–24', '25–34', '35–44', '45–54', '55+']
+export const videoTypes = ['Chuyển đổi', 'Nhận diện']
 export const sourceLabels = { not_started: 'Chưa quay', shooting: 'Đang quay', recorded: 'Đã quay' }
 export const reviewLabels = { not_applicable: 'Không áp dụng', not_submitted: 'Chưa nộp', pending: 'Chờ duyệt', approved: 'Đã duyệt', needs_revision: 'Cần sửa' }
 export const emptyContentInfo = (): ContentInfo => ({ pageName: '', videoType: '', contentLine: '', ageGroups: [], audience: '', campaign: '', sourceUrl: '', sourceStatus: 'not_started' })
